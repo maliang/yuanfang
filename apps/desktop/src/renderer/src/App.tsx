@@ -13,7 +13,7 @@ import type {
   TaskSummary,
 } from "@yuanfang/shared";
 import { api } from "./lib/api";
-import { applyTheme, applyUiScale } from "./lib/appearance";
+import { applyAccent, applyTheme, applyUiScale } from "./lib/appearance";
 import { formatTokens } from "./lib/format";
 import { formatHotkey } from "./lib/hotkey";
 import { SidebarChat } from "./components/SidebarChat";
@@ -315,9 +315,10 @@ function MainApp() {
   useEffect(() => {
     if (config === null) return;
     const cleanup = applyTheme(config.theme);
+    applyAccent(config.accent);
     applyUiScale(config.uiScale);
     return cleanup;
-  }, [config?.theme, config?.uiScale]);
+  }, [config?.theme, config?.accent, config?.uiScale]);
 
   useEffect(() => {
     if (selectedProjectId === null) {
@@ -601,7 +602,12 @@ function MainApp() {
                 ) : (
                   <div className="project-grid">
                     {visibleProjects.map((project) => (
-                      <ProjectCard key={project.id} project={project} onOpen={() => void openProject(project.id)} />
+                      <ProjectCard
+                        key={project.id}
+                        project={project}
+                        isDefault={project.id === config?.defaultProjectId}
+                        onOpen={() => void openProject(project.id)}
+                      />
                     ))}
                   </div>
                 )}

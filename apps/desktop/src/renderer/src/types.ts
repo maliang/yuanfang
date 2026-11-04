@@ -81,6 +81,7 @@ export interface YuanfangApi {
     key: string;
     env?: Record<string, string>;
   }): Promise<import("@yuanfang/shared").ProviderModelsResult>;
+  saveCustomProvider(input: import("@yuanfang/shared").CustomProviderInput): Promise<import("@yuanfang/shared").ProviderModelsResult>;
   removeProviderKey(providerId: string): Promise<import("@yuanfang/shared").ProviderModelsResult>;
   importPiCredentials(): Promise<number>;
   getRoles(): Promise<import("@yuanfang/shared").RoleDefinitionView[]>;

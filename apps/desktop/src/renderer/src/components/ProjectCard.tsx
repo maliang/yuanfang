@@ -1,7 +1,7 @@
 import type { ProjectSummary } from "@yuanfang/shared";
 import { formatDuration, formatPercent, formatRelative, formatTokens, truncate } from "../lib/format";
 
-export function ProjectCard({ project, onOpen }: { project: ProjectSummary; onOpen: () => void }) {
+export function ProjectCard({ project, isDefault = false, onOpen }: { project: ProjectSummary; isDefault?: boolean; onOpen: () => void }) {
   const done = project.taskCounts.done;
   const total = Object.values(project.taskCounts).reduce((sum, count) => sum + count, 0);
   const progress = total === 0 ? 0 : Math.round((done / total) * 100);
@@ -12,6 +12,7 @@ export function ProjectCard({ project, onOpen }: { project: ProjectSummary; onOp
         <div className="project-title-row">
           <span className="project-dot" style={{ background: project.color }} />
           <h3>{project.name}</h3>
+          {isDefault ? <span className="chip accent">默认项目</span> : null}
           {project.status === "paused" ? <span className="chip muted">已暂停</span> : null}
           {project.status === "archived" ? <span className="chip muted">已归档</span> : null}
         </div>

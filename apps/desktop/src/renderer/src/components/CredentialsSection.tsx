@@ -31,6 +31,13 @@ export function CredentialsSection({
   const [loginValue, setLoginValue] = useState("");
   const [loginError, setLoginError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const [showCustom, setShowCustom] = useState(false);
+  const [customId, setCustomId] = useState("");
+  const [customName, setCustomName] = useState("");
+  const [customBaseUrl, setCustomBaseUrl] = useState("");
+  const [customModels, setCustomModels] = useState("");
+  const [customKey, setCustomKey] = useState("");
+  const [customBusy, setCustomBusy] = useState(false);
   const loginIdRef = useRef<string | null>(null);
 
   const loadProviders = async (preferred?: string) => {
@@ -161,6 +168,35 @@ function loginMessageOf(event: LoginEventView): string {
     }
   };
 
+  const saveCustom = async () => {
+    setCustomBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await api.saveCustomProvider({
+        id: customId.trim(),
+        name: customName.trim(),
+        baseUrl: customBaseUrl.trim(),
+        models: customModels.split(/[\n,]/).map((model) => model.trim()).filter(Boolean),
+      });
+      if (customKey.trim().length > 0) {
+        await api.saveProviderKey({ providerId: result.provider.id, key: customKey.trim() });
+      }
+      setShowCustom(false);
+      setCustomId("");
+      setCustomName("");
+      setCustomBaseUrl("");
+      setCustomModels("");
+      setCustomKey("");
+      await loadProviders(result.provider.id);
+      setNotice("自定义服务已保存。在厂商列表中选中它，即可填写 Key 或选择模型。");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setCustomBusy(false);
+    }
+  };
+
   const remove = async () => {
     if (detail === null) return;
     if (!window.confirm(`删除 ${detail.provider.name} 在远方的 API Key？`)) return;
@@ -242,7 +278,47 @@ function loginMessageOf(event: LoginEventView): string {
         >
           {importing ? "导入中…" : "从 Pi 导入凭据（可选）"}
         </button>
+        <button className="ghost-button small" onClick={() => setShowCustom((value) => !value)}>
+          {showCustom ? "收起自定义服务" : "＋ 添加自定义服务"}
+        </button>
       </div>
+      {showCustom ? (
+        <div className="custom-provider-box">
+          <div className="custom-provider-head">
+            <div>
+              <strong>自定义 OpenAI 兼容服务</strong>
+              <p className="muted small">适用于 Ollama、LM Studio、vLLM、代理网关等 Chat Completions 端点。Pi 的 models.json 还支持更多 API 类型。</p>
+            </div>
+          </div>
+          <div className="form-row">
+            <label>
+              服务 ID
+              <input value={customId} onChange={(event) => setCustomId(event.target.value)} placeholder="my-api" />
+            </label>
+            <label>
+              显示名称
+              <input value={customName} onChange={(event) => setCustomName(event.target.value)} placeholder="我的服务" />
+            </label>
+          </div>
+          <label>
+            Base URL
+            <input value={customBaseUrl} onChange={(event) => setCustomBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" />
+          </label>
+          <label>
+            模型 ID（逗号或换行分隔）
+            <textarea value={customModels} onChange={(event) => setCustomModels(event.target.value)} rows={2} placeholder="model-a, model-b" />
+          </label>
+          <label>
+            API Key（可选，本地服务可留空）
+            <input type="password" value={customKey} onChange={(event) => setCustomKey(event.target.value)} placeholder="sk-..." autoComplete="off" />
+          </label>
+          <div className="form-actions">
+            <button className="primary-button" disabled={customBusy} onClick={() => void saveCustom()}>
+              {customBusy ? "保存中…" : "保存自定义服务"}
+            </button>
+          </div>
+        </div>
+      ) : null}
       <p className="muted small">点模型行的「系统 / 项目 / 角色」会填入上方对应模型，保存设置后生效。</p>
       <div className="credentials-layout">
         <div className="provider-column">

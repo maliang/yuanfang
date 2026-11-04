@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -29,13 +29,16 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools, createEditTool, createWriteTool } from "@earendil-works/pi-durable/tools";
-import type { Models } from "@earendil-works/pi-ai";
+import type { MutableModels, Models } from "@earendil-works/pi-ai";
+import { createProvider } from "@earendil-works/pi-ai/models";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import type {
   AgentKind,
   Approval,
   ApprovalStatus,
   ChatMessage,
   ChatSendResult,
+  CustomProviderInput,
   DraftProjectBriefInput,
   DraftProjectBriefResult,
   FileLockInfo,
@@ -48,7 +51,7 @@ import type {
   TaskSummary,
   UpdateConfigInput,
 } from "@yuanfang/shared";
-import { loadConfig, readPersona, saveConfig, writePersona, type AppConfig, type Paths } from "./config.js";
+import { loadConfig, readPersona, resolveUserPath, saveConfig, writePersona, type AppConfig, type Paths } from "./config.js";
 import { openDatabase } from "./db.js";
 import { LayeredFileCredentialStore } from "./credentials.js";
 import { FileLockManager } from "./locks.js";
@@ -109,6 +112,8 @@ export interface OpenOptions {
   models?: Models;
   /** Skip loading ~/.yuanfang/plugins (tests). */
   skipPlugins?: boolean;
+  /** Create/repair the daily-driver project. The desktop enables this; tests do not. */
+  ensureDefaultProject?: boolean;
   now?: () => number;
 }
 
@@ -160,6 +165,8 @@ export class YuanfangRuntime implements RuntimeHost {
   #closed = false;
   #taskClaims = new Map<string, () => void>();
   #indexTimers = new Map<string, NodeJS.Timeout>();
+  #ensureDefaultProjectEnabled = false;
+  #customProviders: CustomProviderInput[] = [];
   #budgetWarnedDay: string | null = null;
   #mergeQueue: Promise<void> = Promise.resolve();
   #logins = new Map<
@@ -196,6 +203,7 @@ export class YuanfangRuntime implements RuntimeHost {
   }
 
   async #init(options: OpenOptions): Promise<void> {
+    this.#ensureDefaultProjectEnabled = options.ensureDefaultProject === true;
     const { config, paths } = await loadConfig(options.workspace);
     this.config = config;
     this.paths = paths;
@@ -210,6 +218,7 @@ export class YuanfangRuntime implements RuntimeHost {
     this.skills = new SkillService(paths.skillsDir);
     this.credentials = new LayeredFileCredentialStore(paths.yuanfangAuthFile, paths.piAuthFile);
     this.models = options.models ?? builtinModels({ credentials: this.credentials });
+    await this.#loadCustomProviders();
     this.registry = createRegistry();
     this.locks = new FileLockManager(() => paths.projectsDir, options.now ?? Date.now);
 
@@ -317,6 +326,7 @@ export class YuanfangRuntime implements RuntimeHost {
     this.locks.subscribe((locks) => this.#emit({ type: "locks", locks }));
 
     await this.#ensureSystemConversation();
+    if (this.#ensureDefaultProjectEnabled) await this.#ensureDefaultProject();
     await this.#reconcileProjects();
     await this.#reconcileTasks();
     if (options.skipPlugins !== true) {
@@ -457,6 +467,89 @@ export class YuanfangRuntime implements RuntimeHost {
       .catch((error: unknown) => {
         this.log("warn", `检查模型凭据失败：${error instanceof Error ? error.message : String(error)}`);
       });
+  }
+
+  // ── custom providers ────────────────────────────────────────────────────
+
+  async #loadCustomProviders(): Promise<void> {
+    try {
+      const parsed: unknown = JSON.parse(await readFile(this.paths.modelsFile, "utf8"));
+      const providers = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as { providers?: unknown }).providers
+        : undefined;
+      if (!Array.isArray(providers)) return;
+      for (const raw of providers) {
+        if (raw === null || typeof raw !== "object") continue;
+        const input = raw as Partial<CustomProviderInput>;
+        if (
+          typeof input.id !== "string" ||
+          typeof input.name !== "string" ||
+          typeof input.baseUrl !== "string" ||
+          !Array.isArray(input.models)
+        ) {
+          continue;
+        }
+        const models = input.models.filter((model): model is string => typeof model === "string" && model.trim().length > 0);
+        if (models.length > 0) this.#registerCustomProvider({ id: input.id, name: input.name, baseUrl: input.baseUrl, models });
+      }
+    } catch {
+      // No custom providers yet.
+    }
+  }
+
+  #registerCustomProvider(input: CustomProviderInput): void {
+    const id = input.id.trim();
+    const baseUrl = input.baseUrl.trim().replace(/\/$/, "");
+    const models = input.models.map((model) => model.trim()).filter(Boolean);
+    const provider = createProvider({
+      id,
+      name: input.name.trim() || id,
+      baseUrl,
+      auth: {
+        apiKey: {
+          name: "API Key",
+          resolve: async ({ credential }) => {
+            const key = credential?.type === "api_key" ? credential.key : undefined;
+            return key === undefined || key.length === 0 ? undefined : { auth: { apiKey: key } };
+          },
+        },
+      },
+      models: models.map((modelId) => ({
+        id: modelId,
+        name: modelId,
+        api: "openai-completions" as const,
+        provider: id,
+        baseUrl,
+        reasoning: false,
+        input: ["text"] as const,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 8_192,
+      })),
+      api: openAICompletionsApi(),
+    });
+    (this.models as MutableModels).setProvider(provider);
+  }
+
+  async saveCustomProvider(input: CustomProviderInput): Promise<import("@yuanfang/shared").ProviderModelsResult> {
+    const id = input.id.trim().toLowerCase();
+    const baseUrl = input.baseUrl.trim().replace(/\/$/, "");
+    const models = input.models.map((model) => model.trim()).filter(Boolean);
+    if (!/^[a-z][a-z0-9._-]{1,48}$/.test(id)) throw new Error("服务 ID 只能使用小写字母、数字、点、下划线或短横线");
+    if (!/^https?:\/\//.test(baseUrl)) throw new Error("Base URL 必须以 http:// 或 https:// 开头");
+    if (models.length === 0) throw new Error("至少填写一个模型 ID");
+    if (this.models.getProvider(id) !== undefined && !this.#customProviders.some((item) => item.id === id)) {
+      throw new Error(`provider ${id} 已存在，请换一个 ID`);
+    }
+    const next = { id, name: input.name.trim() || id, baseUrl, models };
+    this.#registerCustomProvider(next);
+    this.#customProviders = [...this.#customProviders.filter((item) => item.id !== id), next];
+    await writeFile(
+      this.paths.modelsFile,
+      JSON.stringify({ version: 1, providers: this.#customProviders }, null, 2),
+      { mode: 0o600 },
+    );
+    return this.providerModels(id, false);
   }
 
   // ── provider credentials ────────────────────────────────────────────────
@@ -686,7 +779,11 @@ export class YuanfangRuntime implements RuntimeHost {
       updateFeedUrl: this.config.updateFeedUrl,
       quickAskHotkey: this.config.quickAskHotkey,
       theme: this.config.theme,
+      accent: this.config.accent,
       uiScale: this.config.uiScale,
+      defaultProjectId: "prj_default",
+      defaultProjectName: this.config.defaultProjectName,
+      defaultProjectPath: this.config.defaultProjectPath,
       persona,
       personaPath: this.paths.personaFile,
       defaultProjectDir: this.paths.projectsDir,
@@ -735,9 +832,16 @@ export class YuanfangRuntime implements RuntimeHost {
         ? {}
         : { quickAskHotkey: input.quickAskHotkey.trim() }),
       ...(input.theme === undefined ? {} : { theme: input.theme }),
+      ...(input.accent === undefined || !/^#[0-9a-fA-F]{6}$/.test(input.accent) ? {} : { accent: input.accent }),
       ...(input.uiScale === undefined || !Number.isFinite(input.uiScale)
         ? {}
         : { uiScale: Math.min(1.4, Math.max(0.8, Math.round(input.uiScale * 100) / 100)) }),
+      ...(input.defaultProjectName === undefined || input.defaultProjectName.trim().length === 0
+        ? {}
+        : { defaultProjectName: input.defaultProjectName.trim() }),
+      ...(input.defaultProjectPath === undefined || input.defaultProjectPath.trim().length === 0
+        ? {}
+        : { defaultProjectPath: resolveUserPath(input.defaultProjectPath) }),
     };
     this.config = next;
     await saveConfig(this.paths, next);
@@ -774,6 +878,9 @@ export class YuanfangRuntime implements RuntimeHost {
       this.store.setKv(`project_model:${project.id}`, `${next.projectProvider}/${next.projectModel}`);
     }
     this.#status = { ...this.#status, quickAskHotkey: next.quickAskHotkey };
+    if (this.#ensureDefaultProjectEnabled && (input.defaultProjectName !== undefined || input.defaultProjectPath !== undefined)) {
+      await this.#ensureDefaultProject();
+    }
     this.#emit({ type: "status", status: this.status() });
     return this.configViewWithPersona();
   }
@@ -918,6 +1025,62 @@ export class YuanfangRuntime implements RuntimeHost {
     this.store.setKv(`project_model:${project.id}`, `${this.config.projectProvider}/${this.config.projectModel}`);
     await this.#attachConversation(conversation, "project", project.id);
     return String(conversation.id);
+  }
+
+  async #ensureDefaultProject(): Promise<void> {
+    const id = "prj_default";
+    const name = this.config.defaultProjectName;
+    const path = this.config.defaultProjectPath;
+    if (path === "/" || path === homedir()) {
+      this.log("warn", "默认项目路径不能是根目录或用户主目录；已跳过默认项目创建");
+      return;
+    }
+    const existing = this.store.getProjectRecord(id);
+    if (existing !== undefined && existing.name === name && existing.path === path) return;
+    try {
+      await mkdir(path, { recursive: true });
+      if (existing === undefined) {
+        try {
+          await writeFile(
+            join(path, "README.md"),
+            `# ${name}
+
+日常办公与零散文件的默认项目。\n\n---\n\n由「${this.config.agentName}」创建。\n`,
+            { flag: "wx" },
+          );
+        } catch {
+          // Existing README is fine.
+        }
+        await execFileAsync("git", ["init"], { cwd: path }).catch(() => undefined);
+        this.store.createProject({
+          id,
+          name,
+          brief: "日常办公与零散文件的默认项目。",
+          path,
+        });
+      } else {
+        this.store.updateProjectIdentity(id, name, path);
+      }
+      const record = this.store.getProjectRecord(id);
+      if (record?.conversationId !== null && record?.conversationId !== undefined) {
+        const conversation = await this.harness.conversation(cid(record.conversationId), SYSTEM_CONTEXT);
+        await conversation?.configure({ cwd: path }, SYSTEM_CONTEXT).catch(() => undefined);
+      }
+      const count = await this.indexProject(id);
+      const digest = await this.indexer.digest(id, path, count);
+      this.store.addMemory({
+        scope: id,
+        kind: "architecture",
+        title: `项目架构：${name}`,
+        body: digest,
+        source: "system",
+        pinned: true,
+      });
+      const summary = this.store.projectSummary(this.store.getProjectRecord(id)!);
+      this.#emit({ type: "project_updated", project: summary });
+    } catch (error) {
+      this.log("warn", `默认项目初始化失败：${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   async #reconcileProjects(): Promise<void> {
@@ -1359,7 +1522,7 @@ export class YuanfangRuntime implements RuntimeHost {
     let topLevel: string[] = [];
     let fileSamples = "";
     if (rawPath !== undefined && rawPath.length > 0) {
-      directory = resolve(rawPath);
+      directory = resolveUserPath(rawPath);
       if (directory === "/" || directory === homedir()) {
         throw new Error("不能把 / 或用户主目录直接作为项目目录；请选一个子目录");
       }
@@ -1470,7 +1633,7 @@ export class YuanfangRuntime implements RuntimeHost {
 
   async createProject(input: { name: string; brief: string; path?: string }): Promise<ProjectRecord> {
     const projectId = uid("prj");
-    let directory = input.path === undefined ? join(this.paths.projectsDir, slugify(input.name)) : resolve(input.path);
+    let directory = input.path === undefined ? join(this.paths.projectsDir, slugify(input.name)) : resolveUserPath(input.path);
     if (directory === "/" || directory === homedir()) {
       throw new Error("不能把 / 或用户主目录直接作为项目目录；请选一个子目录");
     }
@@ -2171,7 +2334,10 @@ export class YuanfangRuntime implements RuntimeHost {
   // ── reads for the UI ─────────────────────────────────────────────────────
 
   listProjects() {
-    return this.store.listProjectRecords(true).map((project) => this.store.projectSummary(project));
+    return this.store
+      .listProjectRecords(true)
+      .map((project) => this.store.projectSummary(project))
+      .sort((a, b) => Number(b.id === "prj_default") - Number(a.id === "prj_default"));
   }
 
   getProjectRecord(projectId: string): ProjectRecord | undefined {

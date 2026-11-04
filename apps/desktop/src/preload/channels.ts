@@ -37,6 +37,7 @@ export const IPC = {
   getProviders: "yf:getProviders",
   getProviderModels: "yf:getProviderModels",
   saveProviderKey: "yf:saveProviderKey",
+  saveCustomProvider: "yf:saveCustomProvider",
   removeProviderKey: "yf:removeProviderKey",
   importPiCredentials: "yf:importPiCredentials",
   getRoles: "yf:getRoles",

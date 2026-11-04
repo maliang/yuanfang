@@ -26,7 +26,10 @@ export interface AppConfig {
   updateFeedUrl: string;
   quickAskHotkey: string;
   theme: ThemeMode;
+  accent: string;
   uiScale: number;
+  defaultProjectName: string;
+  defaultProjectPath: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -47,6 +50,7 @@ export interface Paths {
   piSettingsFile: string;
   yuanfangAuthFile: string;
   mcpFile: string;
+  modelsFile: string;
   rolesFile: string;
 }
 
@@ -54,6 +58,14 @@ const PI_HOME = join(homedir(), ".pi", "agent");
 
 export function resolveWorkspace(workspace?: string): string {
   return resolve(workspace ?? process.env.YUANFANG_HOME ?? join(homedir(), ".yuanfang"));
+}
+
+/** Resolve a user-entered path, accepting ~/ and ~. */
+export function resolveUserPath(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed === "~") return homedir();
+  if (trimmed.startsWith("~/")) return resolve(join(homedir(), trimmed.slice(2)));
+  return resolve(trimmed);
 }
 
 export function resolvePaths(workspace?: string): Paths {
@@ -74,6 +86,7 @@ export function resolvePaths(workspace?: string): Paths {
     piSettingsFile: join(PI_HOME, "settings.json"),
     yuanfangAuthFile: join(home, "auth.json"),
     mcpFile: join(home, "mcp.json"),
+    modelsFile: join(home, "models.json"),
     rolesFile: join(home, "roles.json"),
   };
 }
@@ -182,7 +195,14 @@ export async function loadConfig(workspace?: string): Promise<{ config: AppConfi
       "https://github.com/maliang/yuanfang/releases/latest/download",
     quickAskHotkey: stored?.quickAskHotkey?.trim() || "CommandOrControl+Shift+Space",
     theme: stored?.theme === "light" || stored?.theme === "system" ? stored.theme : "dark",
+    accent: /^#[0-9a-fA-F]{6}$/.test(stored?.accent ?? "") ? (stored?.accent ?? "#7c8cff") : "#7c8cff",
     uiScale: Number.isFinite(stored?.uiScale) ? Math.min(1.4, Math.max(0.8, Number(stored?.uiScale))) : 1,
+    defaultProjectName: stored?.defaultProjectName?.trim() || "日常",
+    defaultProjectPath: resolveUserPath(
+      stored?.defaultProjectPath?.trim() ||
+        process.env.YUANFANG_DEFAULT_PROJECT_PATH ||
+        join(homedir(), "Documents", "元芳日常"),
+    ),
     createdAt: stored?.createdAt ?? now,
     updatedAt: stored?.updatedAt ?? now,
     ...stored,
@@ -192,7 +212,10 @@ export async function loadConfig(workspace?: string): Promise<{ config: AppConfi
   config.projectsDir = stored?.projectsDir ?? paths.projectsDir;
   config.quickAskHotkey = stored?.quickAskHotkey?.trim() || "CommandOrControl+Shift+Space";
   config.theme = stored?.theme === "light" || stored?.theme === "system" ? stored.theme : "dark";
+  config.accent = /^#[0-9a-fA-F]{6}$/.test(config.accent ?? "") ? config.accent : "#7c8cff";
   config.uiScale = Number.isFinite(config.uiScale) ? Math.min(1.4, Math.max(0.8, Number(config.uiScale))) : 1;
+  config.defaultProjectName = config.defaultProjectName?.trim() || "日常";
+  config.defaultProjectPath = resolveUserPath(config.defaultProjectPath?.trim() || join(homedir(), "Documents", "元芳日常"));
   if (stored === undefined) await saveConfig(paths, config);
   return { config, paths };
 }

@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, screen, shell, Tray } from "electron";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 type AutoUpdater = import("electron-updater").AppUpdater;
 let autoUpdater: AutoUpdater | undefined;
@@ -26,6 +27,9 @@ const E2E_CAPTURE = E2E && process.env.YUANFANG_E2E_CAPTURE === "1";
 if (E2E && process.env.YUANFANG_HOME === undefined) {
   process.env.YUANFANG_HOME = join(tmpdir(), "yuanfang-e2e-home");
 }
+if (E2E && process.env.YUANFANG_DEFAULT_PROJECT_PATH === undefined) {
+  process.env.YUANFANG_DEFAULT_PROJECT_PATH = join(tmpdir(), "yuanfang-e2e-default");
+}
 let runtime: YuanfangRuntime | undefined;
 let bootError: string | null = null;
 let booting = true;
@@ -36,6 +40,8 @@ let quitting = false;
 let updaterUrl = "";
 let updaterReady = false;
 let updaterCheckStarted = false;
+let updaterLoadError = "";
+const requireModule = createRequire(import.meta.url);
 let interactiveUpdateCheck = false;
 let updatePromptOpen = false;
 let quickAskHotkey = "CommandOrControl+Shift+Space";
@@ -379,10 +385,14 @@ function trayMenu(): Electron.MenuItemConstructorOptions[] {
 async function loadUpdater(): Promise<AutoUpdater | undefined> {
   if (autoUpdater !== undefined) return autoUpdater;
   try {
-    const module = await import("electron-updater");
+    // Use CommonJS resolution explicitly. A dynamic import of a CommonJS
+    // dependency can fail inside a packed asar on some Electron/macOS builds.
+    const module = requireModule("electron-updater") as typeof import("electron-updater");
     autoUpdater = module.autoUpdater;
+    updaterLoadError = "";
     return autoUpdater;
   } catch (error) {
+    updaterLoadError = error instanceof Error ? error.message : String(error);
     console.error("[元芳] electron-updater unavailable", error);
     return undefined;
   }
@@ -602,7 +612,7 @@ function registerQuickAskHotkey(accelerator: string): boolean {
 
 async function boot(): Promise<void> {
   try {
-    runtime = await YuanfangRuntime.open();
+    runtime = await YuanfangRuntime.open({ ensureDefaultProject: true });
     applyAgentName(runtime.configView().agentName);
     void configureUpdater(runtime.configView().updateFeedUrl);
     runtime.subscribe((event) => {
@@ -733,6 +743,9 @@ function registerIpc(): void {
   );
   handle<{ providerId: string; key: string; env?: Record<string, string> }>(IPC.saveProviderKey, (input) =>
     requireRuntime().saveProviderKey(input.providerId, input.key, input.env),
+  );
+  handle<import("@yuanfang/shared").CustomProviderInput>(IPC.saveCustomProvider, (input) =>
+    requireRuntime().saveCustomProvider(input),
   );
   handle<string>(IPC.removeProviderKey, (providerId) => requireRuntime().removeProviderKey(providerId));
   handle<void>(IPC.importPiCredentials, () => requireRuntime().importPiCredentials());

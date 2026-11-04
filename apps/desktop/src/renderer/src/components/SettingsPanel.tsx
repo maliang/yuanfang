@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import type { AppInfoView, RuntimeConfigView, ThemeMode, UpdateConfigInput } from "@yuanfang/shared";
 import { CredentialsSection } from "./CredentialsSection";
+import { validAccent } from "../lib/appearance";
 import { formatHotkey } from "../lib/hotkey";
 import { RolesSection } from "./RolesSection";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
-type Tab = "appearance" | "identity" | "models" | "credentials" | "runtime" | "workspace" | "updates" | "extensions";
+type Tab = "appearance" | "identity" | "models" | "credentials" | "runtime" | "workspace" | "updates" | "plugins" | "mcp";
 
 const TABS: Array<{ id: Tab; label: string; hint: string; glyph: string }> = [
   { id: "appearance", label: "外观", hint: "主题与界面字号", glyph: "◐" },
@@ -16,13 +17,23 @@ const TABS: Array<{ id: Tab; label: string; hint: string; glyph: string }> = [
   { id: "runtime", label: "运行", hint: "并发、通知、快捷键", glyph: "▣" },
   { id: "workspace", label: "工作区", hint: "项目目录", glyph: "↻" },
   { id: "updates", label: "更新", hint: "版本与更新源", glyph: "↥" },
-  { id: "extensions", label: "扩展", hint: "插件与 MCP", glyph: "⊞" },
+  { id: "plugins", label: "插件", hint: "沙箱扩展", glyph: "⊞" },
+  { id: "mcp", label: "MCP", hint: "外部工具服务", glyph: "⇄" },
 ];
 
 const THEMES: Array<{ id: ThemeMode; name: string; description: string }> = [
   { id: "dark", name: "深色", description: "默认的深蓝夜色" },
   { id: "light", name: "浅色", description: "清爽的纸张阅读感" },
   { id: "system", name: "跟随系统", description: "随 macOS / Windows 切换" },
+];
+
+const ACCENTS = [
+  { name: "靛蓝", color: "#7c8cff" },
+  { name: "青绿", color: "#4fc3a1" },
+  { name: "琥珀", color: "#f2a65a" },
+  { name: "玫瑰", color: "#e06c9f" },
+  { name: "天青", color: "#5ab0f0" },
+  { name: "紫罗兰", color: "#b48cff" },
 ];
 
 const UI_SCALES = [
@@ -85,6 +96,10 @@ export function SettingsPanel({
   }, [config.availableModels, modelQuery]);
 
   const save = async () => {
+    if (!validAccent(draft.accent)) {
+      setError("主题色必须是 #RRGGBB 格式。");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -105,6 +120,9 @@ export function SettingsPanel({
         dailyTokenBudget: draft.dailyTokenBudget,
         updateFeedUrl: draft.updateFeedUrl,
         quickAskHotkey: draft.quickAskHotkey,
+        accent: draft.accent,
+        defaultProjectName: draft.defaultProjectName,
+        defaultProjectPath: draft.defaultProjectPath,
         theme: draft.theme,
         uiScale: draft.uiScale,
         persona,
@@ -241,6 +259,40 @@ export function SettingsPanel({
                   <span className="logo-mark small" />
                   当前选择：{THEMES.find((theme) => theme.id === draft.theme)?.name} ·{" "}
                   {UI_SCALES.find((item) => Math.abs(item.value - draft.uiScale) < 0.001)?.label ?? "标准"}
+                </div>
+
+                <h3 className="settings-subhead">主题色</h3>
+                <p className="muted small">主题色用于按钮、选中状态、强调文字和焦点边框。可以选预设，也可以自定义。</p>
+                <div className="accent-options">
+                  {ACCENTS.map((accent) => (
+                    <button
+                      key={accent.color}
+                      className={`accent-option ${draft.accent.toLowerCase() === accent.color ? "active" : ""}`}
+                      onClick={() => setDraft({ ...draft, accent: accent.color })}
+                      title={accent.name}
+                    >
+                      <span className="accent-swatch" style={{ background: accent.color }} />
+                      <span>{accent.name}</span>
+                    </button>
+                  ))}
+                  <label className="accent-custom">
+                    <input
+                      type="color"
+                      value={draft.accent}
+                      onChange={(event) => setDraft({ ...draft, accent: event.target.value })}
+                    />
+                    <span>自定义</span>
+                  </label>
+                </div>
+                <div className="accent-hex-row">
+                  <span>当前色值</span>
+                  <input
+                    value={draft.accent}
+                    onChange={(event) => setDraft({ ...draft, accent: event.target.value })}
+                    maxLength={7}
+                    spellCheck={false}
+                  />
+                  <span className="accent-preview" style={{ background: draft.accent }} />
                 </div>
               </section>
             ) : null}
@@ -402,16 +454,51 @@ export function SettingsPanel({
             ) : null}
 
             {tab === "workspace" ? (
-              <section className="settings-section">
-                <h3>工作区</h3>
-                <div className="workspace-row">
-                  <code>{config.workspace}</code>
-                  <button className="ghost-button" onClick={() => void onOpenWorkspace()}>
-                    打开目录
-                  </button>
-                </div>
-                <div className="muted small">项目默认创建在 {config.defaultProjectDir}</div>
-              </section>
+              <>
+                <section className="settings-section">
+                  <h3>默认项目</h3>
+                  <p className="muted small">用来放零散文件和日常办公内容；它始终排在项目列表最前，不会因为长期不活跃被淹没。</p>
+                  <label>
+                    名称
+                    <input
+                      value={draft.defaultProjectName}
+                      onChange={(event) => setDraft({ ...draft, defaultProjectName: event.target.value })}
+                      placeholder="日常"
+                    />
+                  </label>
+                  <label>
+                    位置
+                    <div className="path-row">
+                      <input
+                        value={draft.defaultProjectPath}
+                        onChange={(event) => setDraft({ ...draft, defaultProjectPath: event.target.value })}
+                        placeholder="~/Documents/元芳日常"
+                      />
+                      <button
+                        className="ghost-button small"
+                        onClick={() => {
+                          void window.yuanfang.chooseFolder(draft.defaultProjectPath).then((selected) => {
+                            if (selected !== null) setDraft({ ...draft, defaultProjectPath: selected });
+                          });
+                        }}
+                      >
+                        选择文件夹…
+                      </button>
+                    </div>
+                  </label>
+                  <p className="muted small">改动名称或位置后保存；位置变更会重新索引新目录，不会自动搬走旧目录里的文件。</p>
+                </section>
+                <section className="settings-section">
+                  <h3>工作区</h3>
+                  <div className="workspace-row">
+                    <code>{config.workspace}</code>
+                    <button className="ghost-button" onClick={() => void onOpenWorkspace()}>
+                      打开目录
+                    </button>
+                  </div>
+                  <div className="muted small">普通项目默认创建在 {config.defaultProjectDir}</div>
+                </section>
+              </>
             ) : null}
 
             {tab === "updates" ? (
@@ -450,9 +537,8 @@ export function SettingsPanel({
               </>
             ) : null}
 
-            {tab === "extensions" ? (
-              <>
-                <section className="settings-section">
+            {tab === "plugins" ? (
+              <section className="settings-section">
                   <h3>插件</h3>
                   {plugins.length === 0 ? <div className="muted">还没有插件。系统 Agent 可以通过 plugin_write 创建。</div> : null}
                   <div className="plugin-list">
@@ -482,9 +568,11 @@ export function SettingsPanel({
                   <button className="ghost-button" onClick={() => void window.yuanfang.reloadPlugins().then(() => window.yuanfang.getPlugins().then(setPlugins))}>
                     重新加载插件
                   </button>
-                </section>
+              </section>
+            ) : null}
 
-                <section className="settings-section">
+            {tab === "mcp" ? (
+              <section className="settings-section">
                   <h3>MCP 服务器</h3>
                   {mcpServers.length === 0 ? <div className="muted">还没有 MCP。让系统 Agent 通过 mcp_add 申请接入。</div> : null}
                   <div className="plugin-list">
@@ -509,8 +597,7 @@ export function SettingsPanel({
                       </div>
                     ))}
                   </div>
-                </section>
-              </>
+              </section>
             ) : null}
           </div>
         </div>

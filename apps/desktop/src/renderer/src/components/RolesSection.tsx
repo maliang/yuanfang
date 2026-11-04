@@ -95,7 +95,9 @@ export function RolesSection({ availableModels }: { availableModels: ModelOption
   return (
     <section className="settings-section">
       <h3>角色</h3>
-      <p className="muted small">每个角色可以有自己的 instructions 和模型；模型选「继承」时使用角色 Agent 的默认模型。</p>
+      <p className="muted small">
+        每个角色可以有自己的 instructions 和模型；模型选「继承」时使用角色 Agent 的默认模型。内置角色（包括「合规审查」）也可以直接修改并保存到 roles.json，下一次派发任务时生效。
+      </p>
       <div className="roles-layout">
         <div className="role-list">
           <button className="ghost-button small" onClick={create}>

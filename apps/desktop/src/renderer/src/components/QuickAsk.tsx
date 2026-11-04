@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { RuntimeConfigView } from "@yuanfang/shared";
 import { api } from "../lib/api";
-import { applyTheme, applyUiScale } from "../lib/appearance";
+import { applyAccent, applyTheme, applyUiScale } from "../lib/appearance";
 import { formatHotkey } from "../lib/hotkey";
 
 export function QuickAsk() {
@@ -62,9 +62,10 @@ export function QuickAsk() {
   useEffect(() => {
     if (config === null) return;
     const cleanup = applyTheme(config.theme);
+    applyAccent(config.accent);
     applyUiScale(config.uiScale);
     return cleanup;
-  }, [config?.theme, config?.uiScale]);
+  }, [config?.theme, config?.accent, config?.uiScale]);
 
   return (
     <div className="quick-shell">

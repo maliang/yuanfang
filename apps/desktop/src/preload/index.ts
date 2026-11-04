@@ -40,6 +40,7 @@ const api = {
     ipcRenderer.invoke(IPC.getProviderModels, input),
   saveProviderKey: (input: { providerId: string; key: string; env?: Record<string, string> }) =>
     ipcRenderer.invoke(IPC.saveProviderKey, input),
+  saveCustomProvider: (input: unknown) => ipcRenderer.invoke(IPC.saveCustomProvider, input),
   removeProviderKey: (providerId: string) => ipcRenderer.invoke(IPC.removeProviderKey, providerId),
   importPiCredentials: () => ipcRenderer.invoke(IPC.importPiCredentials),
   getRoles: () => ipcRenderer.invoke(IPC.getRoles),

@@ -246,6 +246,13 @@ export interface ProviderView {
   modelCount: number;
 }
 
+export interface CustomProviderInput {
+  id: string;
+  name: string;
+  baseUrl: string;
+  models: string[];
+}
+
 export interface ProviderModelsResult {
   provider: ProviderView;
   models: ModelOption[];
@@ -282,7 +289,11 @@ export interface RuntimeConfigView {
   updateFeedUrl: string;
   quickAskHotkey: string;
   theme: ThemeMode;
+  accent: string;
   uiScale: number;
+  defaultProjectId: string;
+  defaultProjectName: string;
+  defaultProjectPath: string;
   persona: string;
   personaPath: string;
   defaultProjectDir: string;
@@ -307,7 +318,10 @@ export interface UpdateConfigInput {
   updateFeedUrl?: string;
   quickAskHotkey?: string;
   theme?: ThemeMode;
+  accent?: string;
   uiScale?: number;
+  defaultProjectName?: string;
+  defaultProjectPath?: string;
   persona?: string;
 }
 
@@ -518,6 +532,7 @@ export const IPC = {
   getProviders: "yf:getProviders",
   getProviderModels: "yf:getProviderModels",
   saveProviderKey: "yf:saveProviderKey",
+  saveCustomProvider: "yf:saveCustomProvider",
   removeProviderKey: "yf:removeProviderKey",
   getRoles: "yf:getRoles",
   saveRole: "yf:saveRole",

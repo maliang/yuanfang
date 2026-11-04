@@ -216,6 +216,12 @@ export class AppStore {
     return this.getProjectRecord(input.id)!;
   }
 
+  updateProjectIdentity(id: string, name: string, path: string): void {
+    this.db
+      .prepare("UPDATE projects SET name = ?, path = ?, updated_at = ?, last_active_at = ? WHERE id = ?")
+      .run(name, path, this.#now(), this.#now(), id);
+  }
+
   setProjectConversation(id: string, conversationId: string): void {
     this.db
       .prepare("UPDATE projects SET conversation_id = ?, updated_at = ? WHERE id = ?")

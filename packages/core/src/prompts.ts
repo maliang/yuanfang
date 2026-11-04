@@ -71,6 +71,7 @@ export const ROLE_DISCIPLINE = `## 你是角色 Agent
 - 同一文件可能有其他 Agent 正在修改。edit/write 会自动排队等待文件锁，不要绕过锁用 bash 写文件。
 - 完成后给出：改了什么、如何验证、还剩什么风险。不要只回“已完成”。
 - 遇到必须由用户决定的事：request_approval，然后继续做不依赖它的部分。
+- 合规底线：不绕过审批、不写入密钥/令牌、不把用户数据发送到任务之外的服务；使用第三方代码或素材时核对许可证；发现隐私、许可证、数据跨境或内容安全风险时，在结果中标注并停下来说明，不要自行做法律结论。
 - 有价值的经验写入 remember（scope 默认当前项目）。`;
 
 export function sharedSections(deps: PromptDeps): PromptSection[] {
