@@ -36,6 +36,8 @@ let quitting = false;
 let updaterUrl = "";
 let updaterReady = false;
 let updaterCheckStarted = false;
+let interactiveUpdateCheck = false;
+let updatePromptOpen = false;
 let quickAskHotkey = "CommandOrControl+Shift+Space";
 let quickAskRegistered = false;
 let markBooted: (() => void) | undefined;
@@ -313,6 +315,14 @@ async function runE2E(window: BrowserWindow): Promise<void> {
       scales: document.querySelectorAll('.scale-option').length
     })`);
     await writeFile(join(directory, "settings.png"), (await window.webContents.capturePage()).toPNG());
+    await execute(`[...document.querySelectorAll('.settings-nav-item')].find((item) => item.textContent?.includes('更新'))?.click()`);
+    await wait(350);
+    results.settingsUpdate = await execute(`({
+      version: document.querySelector('.update-card strong')?.textContent ?? null,
+      button: [...document.querySelectorAll('button')].some((item) => item.textContent?.includes('检查更新')),
+      source: Boolean(document.querySelector('input[value*="github.com"]'))
+    })`);
+    await writeFile(join(directory, "settings-update.png"), (await window.webContents.capturePage()).toPNG());
     await execute(`[...document.querySelectorAll('.settings-nav-item')].find((item) => item.textContent?.includes('身份'))?.click()`);
     await wait(350);
     results.settingsIdentity = await execute(`({
@@ -354,6 +364,7 @@ function trayMenu(): Electron.MenuItemConstructorOptions[] {
         if (runtime !== undefined) void shell.openPath(runtime.paths.workspace);
       },
     },
+    { label: "检查更新", click: () => checkForUpdates(true) },
     { type: "separator" },
     {
       label: "退出",
@@ -383,6 +394,9 @@ function setupUpdater(updater: AutoUpdater): void {
   updater.autoDownload = false;
   updater.autoInstallOnAppQuit = true;
   updater.on("update-available", (info) => {
+    interactiveUpdateCheck = false;
+    if (updatePromptOpen) return;
+    updatePromptOpen = true;
     void dialog
       .showMessageBox({
         type: "info",
@@ -395,7 +409,21 @@ function setupUpdater(updater: AutoUpdater): void {
       })
       .then((result) => {
         if (result.response === 0) void updater.downloadUpdate();
+      })
+      .finally(() => {
+        updatePromptOpen = false;
       });
+  });
+  updater.on("update-not-available", (info) => {
+    if (interactiveUpdateCheck) {
+      void dialog.showMessageBox({
+        type: "info",
+        title: "检查更新",
+        message: "当前已经是最新版本。",
+        detail: `当前版本 ${app.getVersion()}，服务器版本 ${info.version}。`,
+      });
+    }
+    interactiveUpdateCheck = false;
   });
   updater.on("update-downloaded", () => {
     if (Notification.isSupported()) {
@@ -405,6 +433,14 @@ function setupUpdater(updater: AutoUpdater): void {
   });
   updater.on("error", (error) => {
     console.error("[元芳] update failed", error);
+    if (interactiveUpdateCheck) {
+      void dialog.showMessageBox({
+        type: "error",
+        title: "检查更新失败",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    interactiveUpdateCheck = false;
   });
 }
 
@@ -427,22 +463,31 @@ async function configureUpdater(url: string): Promise<void> {
 }
 
 async function checkForUpdates(interactive: boolean): Promise<void> {
+  interactiveUpdateCheck = interactive;
   if (!app.isPackaged) {
     if (interactive) void dialog.showMessageBox({ type: "info", title: "检查更新", message: "开发模式不支持自动更新，请使用打包后的应用。" });
+    interactiveUpdateCheck = false;
     return;
   }
   if (updaterUrl.length === 0) {
-    if (interactive) void dialog.showMessageBox({ type: "info", title: "检查更新", message: "还没有配置更新源。请在设置里填写 latest-mac.yml 的地址。" });
+    if (interactive) void dialog.showMessageBox({ type: "info", title: "检查更新", message: "还没有配置更新源。请在设置里填写 latest-mac.yml / latest.yml / latest-linux.yml 的地址。" });
+    interactiveUpdateCheck = false;
     return;
   }
   await configureUpdater(updaterUrl);
   const updater = await loadUpdater();
+  if (updater === undefined) {
+    if (interactive) void dialog.showMessageBox({ type: "error", title: "检查更新失败", message: "更新组件未加载。" });
+    interactiveUpdateCheck = false;
+    return;
+  }
   try {
-    await updater?.checkForUpdates();
+    await updater.checkForUpdates();
   } catch (error) {
     if (interactive) {
       void dialog.showMessageBox({ type: "error", title: "检查更新失败", message: error instanceof Error ? error.message : String(error) });
     }
+    interactiveUpdateCheck = false;
   }
 }
 
@@ -734,6 +779,11 @@ function registerIpc(): void {
   handle<{ name: string; scope: "global" | "project"; projectId?: string | null }>(IPC.deleteSkill, (input) =>
     requireRuntime().removeSkill(input.name, input.scope, input.projectId ?? null),
   );
+  handle<void>(IPC.getAppInfo, () => ({
+    version: app.getVersion(),
+    packaged: app.isPackaged,
+    updateFeedUrl: updaterUrl || requireRuntime().configView().updateFeedUrl,
+  }));
   handle<void>(IPC.getLocks, () => requireRuntime().getLocks());
   handle<string>(IPC.openWorkspace, async (path) => {
     await shell.openPath(path.length > 0 ? path : requireRuntime().paths.workspace);

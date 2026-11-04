@@ -9,6 +9,7 @@ import type {
   ProjectDetail,
   ProjectStatus,
   ProjectSummary,
+  AppInfoView,
   DraftProjectBriefInput,
   DraftProjectBriefResult,
   RuntimeConfigView,
@@ -96,6 +97,7 @@ export interface YuanfangApi {
   draftProjectBrief(input: DraftProjectBriefInput): Promise<DraftProjectBriefResult>;
   chooseFolder(defaultPath?: string): Promise<string | null>;
   setZoom(factor: number): Promise<void>;
+  getAppInfo(): Promise<AppInfoView>;
   getSkills(input?: { projectId?: string | null }): Promise<SkillInfo[]>;
   saveSkill(input: {
     name: string;

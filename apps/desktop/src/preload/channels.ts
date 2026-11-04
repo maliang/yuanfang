@@ -48,6 +48,7 @@ export const IPC = {
   draftProjectBrief: "yf:draftProjectBrief",
   chooseFolder: "yf:chooseFolder",
   setZoom: "yf:setZoom",
+  getAppInfo: "yf:getAppInfo",
   getSkills: "yf:getSkills",
   saveSkill: "yf:saveSkill",
   readSkill: "yf:readSkill",

@@ -335,6 +335,12 @@ export interface DraftProjectBriefInput {
   path?: string;
 }
 
+export interface AppInfoView {
+  version: string;
+  packaged: boolean;
+  updateFeedUrl: string;
+}
+
 export interface DraftProjectBriefResult {
   brief: string;
   fileCount: number;
@@ -523,6 +529,7 @@ export const IPC = {
   draftProjectBrief: "yf:draftProjectBrief",
   chooseFolder: "yf:chooseFolder",
   setZoom: "yf:setZoom",
+  getAppInfo: "yf:getAppInfo",
   getSkills: "yf:getSkills",
   saveSkill: "yf:saveSkill",
   readSkill: "yf:readSkill",

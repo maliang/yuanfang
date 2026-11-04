@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import type { RuntimeConfigView, ThemeMode, UpdateConfigInput } from "@yuanfang/shared";
+import type { AppInfoView, RuntimeConfigView, ThemeMode, UpdateConfigInput } from "@yuanfang/shared";
 import { CredentialsSection } from "./CredentialsSection";
 import { formatHotkey } from "../lib/hotkey";
 import { RolesSection } from "./RolesSection";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
-type Tab = "appearance" | "identity" | "models" | "credentials" | "runtime" | "workspace" | "extensions";
+type Tab = "appearance" | "identity" | "models" | "credentials" | "runtime" | "workspace" | "updates" | "extensions";
 
 const TABS: Array<{ id: Tab; label: string; hint: string; glyph: string }> = [
   { id: "appearance", label: "外观", hint: "主题与界面字号", glyph: "◐" },
@@ -14,7 +14,8 @@ const TABS: Array<{ id: Tab; label: string; hint: string; glyph: string }> = [
   { id: "models", label: "模型", hint: "默认模型与角色", glyph: "◇" },
   { id: "credentials", label: "凭据", hint: "厂商 API Key / 登录", glyph: "⚿" },
   { id: "runtime", label: "运行", hint: "并发、通知、快捷键", glyph: "▣" },
-  { id: "workspace", label: "工作区", hint: "目录与更新", glyph: "↻" },
+  { id: "workspace", label: "工作区", hint: "项目目录", glyph: "↻" },
+  { id: "updates", label: "更新", hint: "版本与更新源", glyph: "↥" },
   { id: "extensions", label: "扩展", hint: "插件与 MCP", glyph: "⊞" },
 ];
 
@@ -50,6 +51,8 @@ export function SettingsPanel({
   const [plugins, setPlugins] = useState<Array<{ name: string; description: string; loaded: boolean; error: string | null; path: string; permissions: string[]; sandboxed: boolean }>>([]);
   const [mcpServers, setMcpServers] = useState<Array<{ name: string; command: string; args: string[]; url: string | null; oauth: boolean; projects: string[]; connected: boolean; tools: Array<{ name: string; description: string }>; error: string | null }>>([]);
   const [modelQuery, setModelQuery] = useState("");
+  const [appInfo, setAppInfo] = useState<AppInfoView | null>(null);
+  const [checking, setChecking] = useState(false);
 
   useEffect(() => {
     setDraft(config);
@@ -59,6 +62,7 @@ export function SettingsPanel({
   useEffect(() => {
     void window.yuanfang.getPlugins().then(setPlugins);
     void window.yuanfang.getMcpServers().then(setMcpServers);
+    void window.yuanfang.getAppInfo().then(setAppInfo).catch(() => undefined);
   }, []);
 
   const providers = useMemo(() => {
@@ -110,6 +114,18 @@ export function SettingsPanel({
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const checkUpdates = async () => {
+    setChecking(true);
+    setError(null);
+    try {
+      await window.yuanfang.checkForUpdates();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      window.setTimeout(() => setChecking(false), 800);
     }
   };
 
@@ -173,6 +189,12 @@ export function SettingsPanel({
                 </span>
               </button>
             ))}
+            <div className="settings-nav-footer">
+              <button className="ghost-button small" onClick={() => void checkUpdates()} disabled={checking}>
+                {checking ? "检查中…" : "检查更新"}
+              </button>
+              <span>v{appInfo?.version ?? "…"}</span>
+            </div>
           </nav>
 
           <div className="settings-content">
@@ -380,31 +402,50 @@ export function SettingsPanel({
             ) : null}
 
             {tab === "workspace" ? (
+              <section className="settings-section">
+                <h3>工作区</h3>
+                <div className="workspace-row">
+                  <code>{config.workspace}</code>
+                  <button className="ghost-button" onClick={() => void onOpenWorkspace()}>
+                    打开目录
+                  </button>
+                </div>
+                <div className="muted small">项目默认创建在 {config.defaultProjectDir}</div>
+              </section>
+            ) : null}
+
+            {tab === "updates" ? (
               <>
                 <section className="settings-section">
-                  <h3>更新</h3>
+                  <h3>版本</h3>
+                  <div className="update-card">
+                    <div>
+                      <strong>元芳 {appInfo?.version ?? "…"}</strong>
+                      <span>
+                        {appInfo === null
+                          ? "正在读取版本…"
+                          : appInfo.packaged
+                            ? "已安装版本"
+                            : "开发模式（不检查更新）"}
+                      </span>
+                    </div>
+                    <button className="primary-button compact" onClick={() => void checkUpdates()} disabled={checking}>
+                      {checking ? "检查中…" : "检查更新"}
+                    </button>
+                  </div>
+                  <p className="muted small">启动后会自动检查一次；发现新版本会先询问，同意后才下载并重启安装。</p>
+                </section>
+                <section className="settings-section">
+                  <h3>更新源</h3>
                   <label>
-                    更新源（latest-mac.yml / latest.yml / latest-linux.yml）
+                    下载地址目录
                     <input
                       value={draft.updateFeedUrl}
                       onChange={(event) => setDraft({ ...draft, updateFeedUrl: event.target.value })}
                       placeholder="https://github.com/…/releases/latest/download"
                     />
                   </label>
-                  <p className="muted small">打包版本启动后会检查对应平台的更新；发现新版本先询问你，同意后下载并自动重启安装。</p>
-                  <button className="ghost-button small" onClick={() => void window.yuanfang.checkForUpdates()}>
-                    立即检查更新
-                  </button>
-                </section>
-                <section className="settings-section">
-                  <h3>工作区</h3>
-                  <div className="workspace-row">
-                    <code>{config.workspace}</code>
-                    <button className="ghost-button" onClick={() => void onOpenWorkspace()}>
-                      打开目录
-                    </button>
-                  </div>
-                  <div className="muted small">项目默认创建在 {config.defaultProjectDir}</div>
+                  <p className="muted small">元芳会按平台自动读取 latest-mac.yml / latest.yml / latest-linux.yml。修改后保存，下一次检查生效。</p>
                 </section>
               </>
             ) : null}

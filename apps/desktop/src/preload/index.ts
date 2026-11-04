@@ -52,6 +52,7 @@ const api = {
   draftProjectBrief: (input: unknown) => ipcRenderer.invoke(IPC.draftProjectBrief, input),
   chooseFolder: (defaultPath?: string) => ipcRenderer.invoke(IPC.chooseFolder, defaultPath),
   setZoom: (factor: number) => ipcRenderer.invoke(IPC.setZoom, factor),
+  getAppInfo: () => ipcRenderer.invoke(IPC.getAppInfo),
   getSkills: (input?: { projectId?: string | null }) => ipcRenderer.invoke(IPC.getSkills, input),
   saveSkill: (input: unknown) => ipcRenderer.invoke(IPC.saveSkill, input),
   readSkill: (input: { name: string; projectId?: string | null }) => ipcRenderer.invoke(IPC.readSkill, input),

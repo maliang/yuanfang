@@ -3509,3 +3509,51 @@ html[data-theme="light"] .logo-mark {
   background-image: url("./assets/mark-light.svg");
   filter: drop-shadow(0 0 6px rgba(91, 108, 232, 0.22));
 }
+
+.settings-nav-footer {
+  margin-top: auto;
+  padding: 12px 10px 4px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.settings-nav-footer span {
+  color: var(--muted);
+  font-size: 10px;
+  padding-left: 2px;
+}
+
+.update-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  padding: 14px;
+  margin: 10px 0 12px;
+}
+
+.update-card div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.update-card strong {
+  font-size: 16px;
+  letter-spacing: -0.01em;
+}
+
+.update-card span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+html[data-theme="light"] .update-card {
+  background: rgba(30, 40, 60, 0.025);
+}
