@@ -58,12 +58,25 @@ jobs:
 
       - name: Build app and release assets
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: |
           npm run build
           cd apps/desktop
-          npx electron-builder --mac --arm64 --publish always
+          npx electron-builder --mac --arm64 --publish never
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: 元芳 ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            apps/desktop/dist/*.dmg
+            apps/desktop/dist/*.zip
+            apps/desktop/dist/latest-mac.yml
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
