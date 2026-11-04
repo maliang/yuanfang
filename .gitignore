@@ -1,0 +1,11 @@
+node_modules/
+dist/
+out/
+*.sqlite
+*.sqlite-*
+*.db
+.DS_Store
+*.log
+.env
+.env.*
+.DS_Store

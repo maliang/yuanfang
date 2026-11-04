@@ -1,0 +1,29 @@
+{
+  "name": "yuanfang",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build:core": "npm run build -w @yuanfang/shared && npm run build -w @yuanfang/core",
+    "build": "npm run build:core && npm run build -w @yuanfang/desktop",
+    "dev": "npm run build:core && npm run dev -w @yuanfang/desktop",
+    "start": "npm run build:core && npm run start -w @yuanfang/desktop",
+    "typecheck": "npm run build:core && npm run typecheck -w @yuanfang/shared && npm run typecheck -w @yuanfang/core && npm run typecheck -w @yuanfang/desktop",
+    "smoke": "npm run build:core && node packages/core/dist/smoke.js",
+    "app": "npm run build && node_modules/.bin/electron apps/desktop",
+    "backup": "node scripts/backup.mjs"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "allowScripts": {
+    "electron@45.2.1": true,
+    "esbuild@0.28.2": true,
+    "esbuild@0.27.7": true,
+    "protobufjs@7.6.6": true
+  }
+}

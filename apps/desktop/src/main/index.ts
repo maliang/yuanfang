@@ -1,0 +1,608 @@
+import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, Notification, screen, shell, Tray } from "electron";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
+import { YuanfangRuntime } from "@yuanfang/core";
+import {
+  IPC,
+  type AddProjectInput,
+  type ChatSendInput,
+  type CreateTaskInput,
+  type NavigateInput,
+  type ProjectStatus,
+  type RuntimeEvent,
+  type RuntimeStatus,
+  type UpdateConfigInput,
+} from "@yuanfang/shared";
+
+const APP_NAME = "元芳";
+app.setName(APP_NAME);
+let agentName = APP_NAME;
+const E2E = process.env.YUANFANG_E2E === "1";
+const E2E_QUIET = E2E && process.env.YUANFANG_E2E_VISIBLE !== "1";
+const E2E_CAPTURE = E2E && process.env.YUANFANG_E2E_CAPTURE === "1";
+if (E2E && process.env.YUANFANG_HOME === undefined) {
+  process.env.YUANFANG_HOME = join(tmpdir(), "yuanfang-e2e-home");
+}
+let runtime: YuanfangRuntime | undefined;
+let bootError: string | null = null;
+let booting = true;
+let mainWindow: BrowserWindow | undefined;
+let quickWindow: BrowserWindow | undefined;
+let tray: Tray | undefined;
+let quitting = false;
+let markBooted: (() => void) | undefined;
+const bootCompleted = new Promise<void>((resolve) => {
+  markBooted = resolve;
+});
+
+function resourcePath(name: string): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, "resources", name)
+    : join(import.meta.dirname, "../../resources", name);
+}
+
+function rendererEntry(): { url?: string; file?: string } {
+  const dev = process.env.ELECTRON_RENDERER_URL;
+  if (dev !== undefined && dev.length > 0) {
+    return { url: dev };
+  }
+  return { file: join(import.meta.dirname, "../renderer/index.html") };
+}
+
+function preloadPath(): string {
+  return join(import.meta.dirname, "../preload/index.cjs");
+}
+
+function loadRenderer(window: BrowserWindow, query = ""): void {
+  const entry = rendererEntry();
+  if (entry.url !== undefined) {
+    void window.loadURL(`${entry.url}${query}`);
+  } else if (entry.file !== undefined) {
+    void window.loadFile(entry.file, { search: query.replace(/^\?/, "") });
+  }
+}
+
+function createMainWindow(): BrowserWindow {
+  const window = new BrowserWindow({
+    width: 1360,
+    height: 900,
+    minWidth: 980,
+    minHeight: 640,
+    show: false,
+    title: APP_NAME,
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 18, y: 18 },
+    backgroundColor: "#0a0c12",
+    vibrancy: "under-window",
+    visualEffectState: "active",
+    icon: nativeImage.createFromPath(resourcePath("icon.png")),
+    webPreferences: {
+      preload: preloadPath(),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  loadRenderer(window);
+  window.once("ready-to-show", () => {
+    if (E2E) {
+      if (E2E_QUIET) {
+        window.setOpacity(0);
+        app.dock?.hide();
+      }
+      window.showInactive();
+      if (E2E_QUIET) window.setPosition(-4000, -4000);
+      if (E2E_CAPTURE) {
+        void runE2E(window);
+      }
+      return;
+    }
+    window.show();
+  });
+  window.on("closed", () => {
+    mainWindow = undefined;
+  });
+  return window;
+}
+
+function createQuickWindow(): BrowserWindow {
+  const workArea = screen.getPrimaryDisplay().workArea;
+  const width = 720;
+  const height = 210;
+  const window = new BrowserWindow({
+    width,
+    height,
+    x: Math.round(workArea.x + (workArea.width - width) / 2),
+    y: Math.round(workArea.y + Math.min(180, workArea.height * 0.18)),
+    show: false,
+    frame: false,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    roundedCorners: true,
+    vibrancy: "hud",
+    visualEffectState: "active",
+    backgroundColor: "#00000000",
+    webPreferences: {
+      preload: preloadPath(),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  window.setAlwaysOnTop(true, "floating");
+  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  loadRenderer(window, "?quick=1");
+  window.on("blur", () => {
+    if (!window.isDestroyed()) window.hide();
+  });
+  window.on("closed", () => {
+    quickWindow = undefined;
+  });
+  return window;
+}
+
+function showMain(navigate?: NavigateInput): void {
+  if (mainWindow === undefined || mainWindow.isDestroyed()) {
+    mainWindow = createMainWindow();
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  if (navigate !== undefined) {
+    mainWindow.webContents.send(IPC.navigate, navigate);
+  }
+}
+
+function toggleQuickAsk(): void {
+  if (quickWindow === undefined || quickWindow.isDestroyed()) {
+    quickWindow = createQuickWindow();
+  }
+  if (quickWindow.isVisible()) {
+    quickWindow.hide();
+    return;
+  }
+  if (E2E) {
+    if (E2E_QUIET) quickWindow.setOpacity(0);
+    quickWindow.showInactive();
+    if (E2E_QUIET) quickWindow.setPosition(-4000, -4000);
+    quickWindow.webContents.send(IPC.event, { type: "log", level: "info", message: "quick-ask:focus" });
+    return;
+  }
+  quickWindow.show();
+  quickWindow.focus();
+  quickWindow.webContents.send(IPC.event, { type: "log", level: "info", message: "quick-ask:focus" });
+}
+
+function broadcast(event: RuntimeEvent): void {
+  for (const window of [mainWindow, quickWindow]) {
+    if (window !== undefined && !window.isDestroyed()) {
+      window.webContents.send(IPC.event, event);
+    }
+  }
+}
+
+function notify(event: Extract<RuntimeEvent, { type: "notification" }>): void {
+  if (!Notification.isSupported() || event.body.trim().length === 0) return;
+  const notification = new Notification({
+    title: event.title,
+    body: event.body,
+    silent: false,
+    urgency: event.urgent ? "critical" : "normal",
+  });
+  notification.on("click", () => {
+    if (event.approvalId !== undefined) {
+      showMain({ view: "approvals" });
+      return;
+    }
+    showMain(
+      event.projectId === null
+        ? { view: "chat", ...(event.conversationId === null ? {} : { conversationId: event.conversationId }), ...(event.messageId === undefined ? {} : { messageId: event.messageId }) }
+        : { view: "project", projectId: event.projectId, ...(event.taskId === null ? {} : { taskId: event.taskId }) },
+    );
+  });
+  notification.show();
+  app.dock?.bounce(event.urgent ? "critical" : "informational");
+}
+
+async function runE2E(window: BrowserWindow): Promise<void> {
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const execute = <T,>(code: string) => window.webContents.executeJavaScript(code) as Promise<T>;
+  const results: Record<string, unknown> = {};
+  try {
+    await wait(1200);
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const ready = await execute<boolean>("Boolean(window.yuanfang)");
+      if (ready) break;
+      await wait(250);
+    }
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const label = await execute<string>("document.querySelector('.runtime-label')?.textContent ?? ''");
+      if (label.includes("在线") || label.includes("失败")) break;
+      await wait(250);
+    }
+    await wait(800);
+    const directory = "/tmp/yuanfang-e2e";
+    await mkdir(directory, { recursive: true });
+    results.home = await execute(`({
+      title: document.querySelector('.hero h1')?.textContent ?? null,
+      cards: document.querySelectorAll('.project-card').length,
+      chat: Boolean(document.querySelector('.chat-panel')),
+      composer: Boolean(document.querySelector('.chat-composer textarea')),
+      runtime: document.querySelector('.runtime-label')?.textContent ?? null,
+      body: document.body.innerText.slice(0, 1600)
+    })`);
+    await writeFile(join(directory, "home.png"), (await window.webContents.capturePage()).toPNG());
+
+    let projectCards = await execute<number>("document.querySelectorAll('.project-card').length");
+    if (projectCards === 0) {
+      const revealed = await execute<boolean>(`(() => {
+        const button = [...document.querySelectorAll('button')].find((item) => item.textContent?.includes('显示归档'));
+        if (!button) return false;
+        button.click();
+        return true;
+      })()`);
+      if (revealed) {
+        await wait(500);
+        projectCards = await execute<number>("document.querySelectorAll('.project-card').length");
+      }
+    }
+    if (projectCards > 0) {
+      await execute(`document.querySelector('.project-card')?.click()`);
+      await wait(1200);
+      results.project = await execute(`({
+        workspace: Boolean(document.querySelector('.workspace')),
+        title: document.querySelector('.workspace-title h1')?.textContent ?? null,
+        stats: [...document.querySelectorAll('.stat')].map((item) => item.textContent),
+        tasks: document.querySelectorAll('.task-row').length,
+        tabs: [...document.querySelectorAll('.workspace-tabs .tab')].map((item) => item.textContent)
+      })`);
+      await writeFile(join(directory, "project.png"), (await window.webContents.capturePage()).toPNG());
+      await execute(`document.querySelector('.task-row')?.click()`);
+      await wait(800);
+      results.task = await execute(`({
+        detail: Boolean(document.querySelector('.task-detail')),
+        events: Boolean(document.querySelector('.task-events')),
+        review: Boolean(document.querySelector('.review-box')),
+        title: document.querySelector('.task-detail h2')?.textContent ?? null
+      })`);
+      await writeFile(join(directory, "task.png"), (await window.webContents.capturePage()).toPNG());
+      await execute(`document.querySelector('.task-detail .icon-button')?.click()`);
+      await wait(300);
+      await execute(`document.querySelector('.workspace-header .back')?.click()`);
+      await wait(400);
+    }
+
+    const clicked = await execute<boolean>(`(() => {
+      const button = [...document.querySelectorAll('button')].find((item) => item.textContent?.includes('创建一个项目'));
+      if (!button) return false;
+      button.click();
+      return true;
+    })()`);
+    results.openedNewProject = clicked;
+    await wait(500);
+    results.modal = await execute(`({
+      modal: Boolean(document.querySelector('.modal')),
+      heading: document.querySelector('.modal h2')?.textContent ?? null,
+      inputs: document.querySelectorAll('.modal input, .modal textarea').length
+    })`);
+    await writeFile(join(directory, "new-project.png"), (await window.webContents.capturePage()).toPNG());
+
+    await execute(`document.querySelector('.modal .icon-button')?.click()`);
+    await wait(300);
+    await execute(`[...document.querySelectorAll('.topbar-nav button')].find((item) => item.textContent?.includes('设置'))?.click()`);
+    await wait(600);
+    results.settings = await execute(`({
+      modal: Boolean(document.querySelector('.modal')),
+      heading: document.querySelector('.modal h2')?.textContent ?? null,
+      selects: document.querySelectorAll('.modal select').length,
+      persona: Boolean(document.querySelector('.persona-editor'))
+    })`);
+    await writeFile(join(directory, "settings.png"), (await window.webContents.capturePage()).toPNG());
+
+    await execute(`document.querySelector('.modal .icon-button')?.click()`);
+    await wait(300);
+    toggleQuickAsk();
+    await wait(900);
+    if (quickWindow !== undefined) {
+      results.quick = await quickWindow.webContents.executeJavaScript(`({
+        shell: Boolean(document.querySelector('.quick-shell')),
+        input: Boolean(document.querySelector('.quick-input-row input')),
+        hint: document.querySelector('.quick-hint')?.textContent ?? null
+      })`);
+      await writeFile(join(directory, "quick.png"), (await quickWindow.webContents.capturePage()).toPNG());
+      quickWindow.hide();
+    }
+    console.log("E2E_RESULT " + JSON.stringify(results));
+  } catch (error) {
+    console.error("E2E_ERROR", error);
+  } finally {
+    await runtime?.close().catch(() => undefined);
+    app.quit();
+  }
+}
+
+function trayMenu(): Electron.MenuItemConstructorOptions[] {
+  return [
+    { label: `打开${agentName}`, click: () => showMain() },
+    { label: "快速提问", accelerator: "CommandOrControl+Shift+Space", click: () => toggleQuickAsk() },
+    { type: "separator" },
+    {
+      label: "打开工作区",
+      click: () => {
+        if (runtime !== undefined) void shell.openPath(runtime.paths.workspace);
+      },
+    },
+    { type: "separator" },
+    {
+      label: "退出",
+      click: () => {
+        quitting = true;
+        app.quit();
+      },
+    },
+  ];
+}
+
+function createTray(): void {
+  const image = nativeImage.createFromPath(resourcePath("trayTemplate.png"));
+  image.setTemplateImage(true);
+  tray = new Tray(image);
+  tray.setToolTip(agentName);
+  tray.on("click", () => showMain());
+  tray.setContextMenu(Menu.buildFromTemplate(trayMenu()));
+}
+
+function appMenu(): Electron.MenuItemConstructorOptions[] {
+  return [
+    {
+      label: APP_NAME,
+      submenu: [
+        { role: "about" },
+        { type: "separator" },
+        { label: "设置…", accelerator: "CommandOrControl+,", click: () => showMain({ view: "settings" }) },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        { role: "quit" },
+      ],
+    },
+    { role: "editMenu" },
+    {
+      label: "视图",
+      submenu: [
+        { role: "reload" },
+        { role: "toggleDevTools" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+      ],
+    },
+    {
+      label: agentName,
+      submenu: [
+        { label: "打开主窗口", accelerator: "CommandOrControl+0", click: () => showMain() },
+        { label: "快速提问", accelerator: "CommandOrControl+Shift+Space", click: () => toggleQuickAsk() },
+        { label: "审批", click: () => showMain({ view: "approvals" }) },
+        { label: "记忆", click: () => showMain({ view: "memory" }) },
+      ],
+    },
+  ];
+}
+
+function applyAgentName(name: string): void {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return;
+  agentName = trimmed;
+  mainWindow?.setTitle(agentName);
+  tray?.setToolTip(agentName);
+  if (tray !== undefined) tray.setContextMenu(Menu.buildFromTemplate(trayMenu()));
+  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenu()));
+}
+
+function status(): RuntimeStatus {
+  if (runtime !== undefined) return runtime.status();
+  return {
+    ready: false,
+    booting,
+    error: bootError,
+    warning: null,
+    workspace: "",
+    startedAt: Date.now(),
+    activeRuns: 0,
+    pendingApprovals: 0,
+    runningTasks: 0,
+    quickAskHotkey: "CommandOrControl+Shift+Space",
+  };
+}
+
+async function boot(): Promise<void> {
+  try {
+    runtime = await YuanfangRuntime.open();
+    applyAgentName(runtime.configView().agentName);
+    runtime.subscribe((event) => {
+      broadcast(event);
+      if (event.type === "notification") notify(event);
+    });
+    booting = false;
+    bootError = null;
+    broadcast({ type: "status", status: runtime.status() });
+  } catch (error) {
+    booting = false;
+    bootError = error instanceof Error ? error.message : String(error);
+    console.error("[元芳] boot failed", error);
+    broadcast({ type: "status", status: status() });
+  } finally {
+    markBooted?.();
+    markBooted = undefined;
+  }
+}
+
+function handle<T>(channel: string, fn: (input: T) => unknown | Promise<unknown>): void {
+  ipcMain.handle(channel, async (_event, input: T) => {
+    try {
+      await bootCompleted;
+      return await fn(input);
+    } catch (error) {
+      console.error(`[元芳] ipc ${channel} failed`, error);
+      throw error;
+    }
+  });
+}
+
+function requireRuntime(): YuanfangRuntime {
+  if (runtime === undefined) throw new Error(bootError ?? "元芳正在启动，请稍候");
+  return runtime;
+}
+
+function registerIpc(): void {
+  ipcMain.handle(IPC.getStatus, () => status());
+  handle<void>(IPC.getProjects, () => requireRuntime().listProjects());
+  handle<string>(IPC.getProject, (projectId) => requireRuntime().projectDetailAsync(projectId));
+  handle<AddProjectInput>(IPC.createProject, async (input) => {
+    const rt = requireRuntime();
+    const project = await rt.createProject(input);
+    return rt.projectRecordView(project.id);
+  });
+  handle<{ projectId: string; status: ProjectStatus }>(IPC.updateProject, (input) => {
+    const current = requireRuntime().getProjectRecord(input.projectId);
+    if (current === undefined) return undefined;
+    requireRuntime().setProjectStatus(input.projectId, input.status);
+    return requireRuntime().projectRecordView(input.projectId);
+  });
+  handle<{ projectId: string; status: ProjectStatus }>(IPC.archiveProject, (input) => {
+    requireRuntime().setProjectStatus(input.projectId, input.status);
+    return requireRuntime().projectRecordView(input.projectId);
+  });
+  handle<CreateTaskInput>(IPC.createTask, (input) => requireRuntime().createTask(input));
+  handle<string>(IPC.dispatchTask, (taskId) => requireRuntime().dispatchTask(taskId));
+  handle<string>(IPC.cancelTask, (taskId) => requireRuntime().cancelTask(taskId));
+  handle<{ taskId: string; note?: string }>(IPC.acceptTask, (input) => requireRuntime().acceptTask(input.taskId, input.note));
+  handle<{ taskId: string; note: string }>(IPC.rejectTask, (input) => requireRuntime().rejectTask(input.taskId, input.note));
+  handle<string>(IPC.retryTask, (taskId) => requireRuntime().retryTask(taskId));
+  handle<string>(IPC.abortConversation, (conversationId) => requireRuntime().abortConversation(conversationId));
+  handle<string>(IPC.getTasks, (projectId) => requireRuntime().listTasks(projectId));
+  handle<string>(IPC.getTaskEvents, (taskId) => requireRuntime().listTaskEvents(taskId));
+  handle<string>(IPC.indexProject, (projectId) => requireRuntime().indexProject(projectId));
+  handle<string>(IPC.deleteProject, (projectId) => requireRuntime().deleteProject(projectId));
+  handle<ChatSendInput>(IPC.sendChat, (input) =>
+    input.projectId === undefined || input.projectId === null
+      ? requireRuntime().sendSystemMessage(input.text)
+      : requireRuntime().sendProjectMessage(input.projectId, input.text),
+  );
+  handle<string>(IPC.getConversation, (conversationId) => requireRuntime().getConversationFeed(conversationId));
+  handle<void>(IPC.getSystemConversation, () => {
+    const rt = requireRuntime();
+    const conversationId = rt.systemConversationFeed();
+    return { conversationId, feed: rt.getConversationFeed(conversationId) };
+  });
+  handle<{ status?: "pending" | "approved" | "denied" }>(IPC.getApprovals, (input) =>
+    requireRuntime().getApprovals(input?.status),
+  );
+  handle<void>(IPC.getNotifications, () => requireRuntime().getNotifications());
+  handle<void>(IPC.markNotificationsRead, () => requireRuntime().markNotificationsRead());
+  handle<{ id: string; decision: "approved" | "denied"; note: string | null }>(IPC.resolveApproval, (input) =>
+    requireRuntime().resolveApproval(input.id, input.decision, input.note),
+  );
+  handle<{ projectId?: string | null }>(IPC.getMemories, (input) =>
+    requireRuntime().getMemories(input?.projectId ?? null),
+  );
+  handle<Parameters<YuanfangRuntime["addMemory"]>[0]>(IPC.addMemory, (input) => requireRuntime().addMemory(input));
+  handle<{ id: string; change: Parameters<YuanfangRuntime["updateMemory"]>[1] }>(IPC.updateMemory, (input) =>
+    requireRuntime().updateMemory(input.id, input.change),
+  );
+  handle<string>(IPC.deleteMemory, (id) => requireRuntime().deleteMemory(id));
+  handle<Parameters<YuanfangRuntime["saveSkill"]>[0]>(IPC.saveSkill, (input) => requireRuntime().saveSkill(input));
+  handle<{ name: string; projectId?: string | null }>(IPC.readSkill, (input) =>
+    requireRuntime().readSkill(input.name, input.projectId ?? null),
+  );
+  handle<{ query: string; projectId?: string | null }>(IPC.search, (input) =>
+    requireRuntime().search(input.query, input.projectId ?? null),
+  );
+  handle<void>(IPC.getConfig, () => requireRuntime().configViewWithPersona());
+  handle<void>(IPC.getProviders, () => requireRuntime().providers());
+  handle<{ providerId: string; refresh?: boolean }>(IPC.getProviderModels, (input) =>
+    requireRuntime().providerModels(input.providerId, input.refresh === true),
+  );
+  handle<{ providerId: string; key: string; env?: Record<string, string> }>(IPC.saveProviderKey, (input) =>
+    requireRuntime().saveProviderKey(input.providerId, input.key, input.env),
+  );
+  handle<string>(IPC.removeProviderKey, (providerId) => requireRuntime().removeProviderKey(providerId));
+  handle<UpdateConfigInput>(IPC.updateConfig, async (input) => {
+    const updated = await requireRuntime().updateConfig(input);
+    applyAgentName(updated.agentName);
+    return updated;
+  });
+  handle<{ projectId?: string | null }>(IPC.getSkills, async (input) => {
+    const rt = requireRuntime();
+    const projectId = input?.projectId ?? null;
+    const project = projectId === null ? undefined : rt.getProjectRecord(projectId);
+    return rt.skills.list(projectId, project?.path ?? null);
+  });
+  handle<void>(IPC.getPlugins, () => requireRuntime().plugins.list());
+  handle<void>(IPC.getMcpServers, () => requireRuntime().mcp.list());
+  handle<string>(IPC.removeMcpServer, (name) => requireRuntime().mcp.remove(name));
+  handle<void>(IPC.reloadPlugins, () => requireRuntime().reloadPlugins());
+  handle<string>(IPC.removePlugin, (name) => requireRuntime().removePlugin(name));
+  handle<{ name: string; scope: "global" | "project"; projectId?: string | null }>(IPC.deleteSkill, (input) =>
+    requireRuntime().removeSkill(input.name, input.scope, input.projectId ?? null),
+  );
+  handle<void>(IPC.getLocks, () => requireRuntime().getLocks());
+  handle<string>(IPC.openWorkspace, async (path) => {
+    await shell.openPath(path.length > 0 ? path : requireRuntime().paths.workspace);
+  });
+  handle<{ text: string }>(IPC.quickAsk, async (input) => {
+    const result = await requireRuntime().sendSystemMessage(input.text);
+    if (quickWindow !== undefined && !quickWindow.isDestroyed()) quickWindow.hide();
+    return result;
+  });
+  ipcMain.on(IPC.hideQuickAsk, () => {
+    if (quickWindow !== undefined && !quickWindow.isDestroyed()) quickWindow.hide();
+  });
+  ipcMain.on(IPC.openMain, () => showMain());
+}
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => showMain());
+  app.whenReady().then(async () => {
+    Menu.setApplicationMenu(Menu.buildFromTemplate(appMenu()));
+
+    registerIpc();
+    mainWindow = createMainWindow();
+    if (!E2E) {
+      createTray();
+      const registered = globalShortcut.register("CommandOrControl+Shift+Space", () => toggleQuickAsk());
+      if (!registered) console.warn("[元芳] shortcut registration failed");
+    }
+    await boot();
+  });
+
+  app.on("activate", () => showMain());
+  app.on("window-all-closed", () => {
+    // The tray keeps the app alive on macOS; quitting is explicit.
+    if (process.platform !== "darwin") app.quit();
+  });
+  app.on("before-quit", (event) => {
+    if (quitting) return;
+    quitting = true;
+    event.preventDefault();
+    void (async () => {
+      globalShortcut.unregisterAll();
+      await runtime?.close().catch(() => undefined);
+      app.quit();
+    })();
+  });
+}
