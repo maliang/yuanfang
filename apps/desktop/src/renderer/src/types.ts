@@ -19,6 +19,7 @@ import type {
 } from "@yuanfang/shared";
 
 export interface YuanfangApi {
+  platform: string;
   getStatus(): Promise<RuntimeStatus>;
   getProjects(): Promise<ProjectSummary[]>;
   getProject(projectId: string): Promise<ProjectDetail | undefined>;

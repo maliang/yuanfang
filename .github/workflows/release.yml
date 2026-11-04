@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build and publish (e.g. v0.2.0)"
+        description: "Existing tag to build and publish (e.g. v0.2.2)"
         required: true
 
 permissions:
@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  macos-arm64:
+  build-macos:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -44,7 +44,6 @@ jobs:
           TAG="${{ steps.tag.outputs.tag }}"
           if [ "v$APP_VERSION" != "$TAG" ]; then
             echo "apps/desktop/package.json version is $APP_VERSION, but tag is $TAG" >&2
-            echo "Bump apps/desktop/package.json before tagging." >&2
             exit 1
           fi
 
@@ -56,34 +55,104 @@ jobs:
           npm run typecheck
           npm run smoke
 
-      - name: Build app and release assets
+      - name: Build macOS universal
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: |
           npm run build
           cd apps/desktop
-          npx electron-builder --mac --arm64 --publish never
+          npx electron-builder --mac --universal --publish never
 
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: 元芳 ${{ steps.tag.outputs.tag }}
-          generate_release_notes: true
-          draft: false
-          prerelease: false
-          fail_on_unmatched_files: true
-          files: |
-            apps/desktop/dist/*.dmg
-            apps/desktop/dist/*.zip
-            apps/desktop/dist/latest-mac.yml
-
-      - name: Upload workflow artifacts
+      - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: yuanfang-macos-arm64
+          name: yuanfang-macos
           path: |
             apps/desktop/dist/*.dmg
             apps/desktop/dist/*.zip
             apps/desktop/dist/latest-mac.yml
           if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build Windows x64
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          npm run build
+          cd apps/desktop
+          npx electron-builder --win --x64 --publish never
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuanfang-windows
+          path: |
+            apps/desktop/dist/*.exe
+            apps/desktop/dist/latest.yml
+            apps/desktop/dist/*.blockmap
+          if-no-files-found: error
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build Linux x64
+        run: |
+          npm run build
+          cd apps/desktop
+          npx electron-builder --linux --x64 --publish never
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuanfang-linux
+          path: |
+            apps/desktop/dist/*.AppImage
+            apps/desktop/dist/latest-linux.yml
+            apps/desktop/dist/*.blockmap
+          if-no-files-found: error
+
+  publish:
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: yuanfang-*
+          merge-multiple: true
+          path: release-assets
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          name: 元芳 ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/*.dmg
+            release-assets/*.zip
+            release-assets/*.exe
+            release-assets/*.AppImage
+            release-assets/*.blockmap
+            release-assets/latest*.yml

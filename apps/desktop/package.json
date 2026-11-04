@@ -1,6 +1,6 @@
 {
   "name": "@yuanfang/desktop",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
@@ -76,6 +76,36 @@
         "releaseType": "release"
       }
     ],
-    "artifactName": "Yuanfang-${version}-${arch}.${ext}"
+    "artifactName": "Yuanfang-${version}-${arch}.${ext}",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "resources/icon.ico",
+      "artifactName": "Yuanfang-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Utility",
+      "icon": "resources/icon.png",
+      "artifactName": "Yuanfang-${version}-${arch}.${ext}"
+    }
   }
 }

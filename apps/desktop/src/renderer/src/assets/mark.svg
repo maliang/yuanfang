@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="arc" x1="48" y1="48" x2="208" y2="208" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#a6b0ff"/>
+      <stop offset="0.55" stop-color="#7c8cff"/>
+      <stop offset="1" stop-color="#4fc3a1"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="86" y1="70" x2="174" y2="196" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#cbd5ff"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="3" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <circle cx="128" cy="128" r="88" fill="none" stroke="#ffffff" stroke-opacity="0.14" stroke-width="1.5"/>
+  <path d="M128 38A90 90 0 1 1 39 148" fill="none" stroke="url(#arc)" stroke-width="4" stroke-linecap="round" filter="url(#glow)"/>
+  <circle cx="199" cy="76" r="4.5" fill="#f2b36a"/>
+  <g>
+    <path d="M128 138L98 88" fill="none" stroke="url(#mark)" stroke-width="18" stroke-linecap="round"/>
+    <path d="M128 138L158 88" fill="none" stroke="url(#mark)" stroke-width="18" stroke-linecap="round"/>
+    <path d="M128 138L128 188" fill="none" stroke="url(#mark)" stroke-width="18" stroke-linecap="round"/>
+  </g>
+</svg>

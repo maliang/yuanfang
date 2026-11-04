@@ -3,6 +3,7 @@ import type { RuntimeEvent, NavigateInput } from "@yuanfang/shared";
 import { IPC } from "./channels";
 
 const api = {
+  platform: process.platform,
   getStatus: () => ipcRenderer.invoke(IPC.getStatus),
   getProjects: () => ipcRenderer.invoke(IPC.getProjects),
   getProject: (projectId: string) => ipcRenderer.invoke(IPC.getProject, projectId),

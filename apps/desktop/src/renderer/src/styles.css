@@ -163,11 +163,15 @@ select {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 18px 0 92px;
+  padding: 0 18px;
   border-bottom: 1px solid var(--line);
   background: rgba(8, 10, 15, 0.55);
   backdrop-filter: blur(24px);
   -webkit-app-region: drag;
+}
+
+body[data-platform="darwin"] .topbar {
+  padding-left: 92px;
 }
 
 .topbar button,
@@ -610,12 +614,8 @@ select {
 .logo-mark {
   width: 22px;
   height: 22px;
-  border-radius: 50%;
-  background:
-    radial-gradient(circle at 50% 50%, #fff 0 14%, transparent 15%),
-    conic-gradient(from 20deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.05)),
-    #6f7df2;
-  box-shadow: 0 0 22px rgba(124, 140, 255, 0.5), inset 0 0 10px rgba(0, 0, 0, 0.35);
+  background: url("./assets/mark.svg") center / contain no-repeat;
+  filter: drop-shadow(0 0 7px rgba(124, 140, 255, 0.55));
   display: inline-block;
   flex: none;
 }

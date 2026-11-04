@@ -122,24 +122,25 @@ apps/desktop/
 推送 `v*` tag 会触发 GitHub Actions：
 
 ```bash
-# 先把 apps/desktop/package.json 的 version 改成 0.2.1
-git tag v0.2.1
-git push origin v0.2.1
+# 先把 apps/desktop/package.json 的 version 改成 0.2.2
+git tag v0.2.2
+git push origin v0.2.2
 ```
 
-工作流会在 macOS 上：
+工作流会分别构建：
 
-1. 校验 tag 与 `apps/desktop/package.json` 版本一致；
-2. `npm ci`；
-3. `typecheck` + `smoke`；
-4. `electron-builder --mac --arm64 --publish always`；
-5. 上传 `.dmg` / `.zip` / `latest-mac.yml` 到 GitHub Release。
+- macOS：universal（Intel x64 + Apple Silicon），`.dmg` / `.zip` / `latest-mac.yml`；
+- Windows：x64 NSIS 安装包，`latest.yml`；
+- Linux：x64 AppImage，`latest-linux.yml`；
+- 最后统一上传到同一个 GitHub Release。
+
+构建前会校验 tag 与 `apps/desktop/package.json` 版本一致。
 
 设置里的默认更新源是：
 
 `https://github.com/maliang/yuanfang/releases/latest/download`
 
-所以发布后，已安装的打包版本会检查该地址的 `latest-mac.yml`，提示并自动升级。当前产物是 unsigned；正式分发需要签名/公证。
+所以发布后，已安装的打包版本会检查对应平台的 `latest-mac.yml` / `latest.yml` / `latest-linux.yml`，提示并自动升级。当前产物是 unsigned；正式分发需要签名/公证。
 
 ## 验证
 
@@ -164,7 +165,8 @@ YUANFANG_E2E=1 YUANFANG_E2E_CAPTURE=1 YUANFANG_HOME=/tmp/yuanfang-e2e-home \
 - MCP 支持 stdio、Streamable HTTP 和 MCP OAuth；OAuth 回调/浏览器流程需要真机验证。
 - 记忆是 SQLite + 关键词/全文检索，不是向量检索；适合单机、单用户规模。
 - 插件在 QuickJS WASM 沙箱内运行，没有 Node 全局；但宿主能力仍受审批时的 permissions 控制，恶意代码请勿批准。
-- 已提供 unsigned 打包：`npm run dist`（dmg）或 `npm run dist:dir`（.app）；更新源配置后可提示并自动下载/重启安装，但没有代码签名。
+- 已提供 unsigned 打包：macOS universal / Windows x64 / Linux x64；更新源配置后可提示并自动下载/重启安装，但没有代码签名。
+- Windows 未签名会触发 SmartScreen；macOS 需要签名/公证才能避免 Gatekeeper 拦截。
 - 通知的 app 名称和图标需要打包后才完全正确；开发模式下可能显示 Electron。
 - 系统 Agent 的一次用户回合结束后会 `reset` 成新上下文（用记忆 handoff），因此模型不再看到完整原始对话；UI 仍然保留完整消息。
 - 文件占用只覆盖任务声明过的 `files`；worktree 模式可以绕开，但要求干净的 git 仓库。

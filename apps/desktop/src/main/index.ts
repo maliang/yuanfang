@@ -76,11 +76,10 @@ function createMainWindow(): BrowserWindow {
     minHeight: 640,
     show: false,
     title: APP_NAME,
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 18, y: 18 },
+    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    ...(process.platform === "darwin" ? { trafficLightPosition: { x: 18, y: 18 } } : {}),
     backgroundColor: "#0a0c12",
-    vibrancy: "under-window",
-    visualEffectState: "active",
+    ...(process.platform === "darwin" ? { vibrancy: "under-window" as const, visualEffectState: "active" as const } : {}),
     icon: nativeImage.createFromPath(resourcePath("icon.png")),
     webPreferences: {
       preload: preloadPath(),
@@ -130,8 +129,7 @@ function createQuickWindow(): BrowserWindow {
     skipTaskbar: true,
     alwaysOnTop: true,
     roundedCorners: true,
-    vibrancy: "hud",
-    visualEffectState: "active",
+    ...(process.platform === "darwin" ? { vibrancy: "hud" as const, visualEffectState: "active" as const } : {}),
     backgroundColor: "#00000000",
     webPreferences: {
       preload: preloadPath(),
@@ -141,7 +139,9 @@ function createQuickWindow(): BrowserWindow {
     },
   });
   window.setAlwaysOnTop(true, "floating");
-  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  if (process.platform === "darwin") {
+    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  }
   loadRenderer(window, "?quick=1");
   window.on("blur", () => {
     if (!window.isDestroyed()) window.hide();
@@ -436,8 +436,11 @@ async function checkForUpdates(interactive: boolean): Promise<void> {
 }
 
 function createTray(): void {
-  const image = nativeImage.createFromPath(resourcePath("trayTemplate.png"));
-  image.setTemplateImage(true);
+  const image =
+    process.platform === "darwin"
+      ? nativeImage.createFromPath(resourcePath("trayTemplate.png"))
+      : nativeImage.createFromPath(resourcePath("icon.png")).resize({ width: 22, height: 22 });
+  if (process.platform === "darwin") image.setTemplateImage(true);
   tray = new Tray(image);
   tray.setToolTip(agentName);
   tray.on("click", () => showMain());
