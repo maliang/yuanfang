@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ConversationFeed } from "@yuanfang/shared";
 import { Markdown } from "./Markdown";
 import { formatRelative } from "../lib/format";
+import { formatHotkey } from "../lib/hotkey";
 
 interface Props {
   agentName: string;
@@ -13,11 +14,12 @@ interface Props {
   onToggle: (collapsed: boolean) => void;
   onSend: (text: string) => Promise<void>;
   onStop: () => Promise<void>;
+  quickAskHotkey: string;
   onOpenQuickAsk: () => void;
   onOpenSettings: () => void;
 }
 
-export function SidebarChat({ agentName, feed, busy, ready, collapsed, unread, onToggle, onSend, onStop, onOpenQuickAsk, onOpenSettings }: Props) {
+export function SidebarChat({ agentName, feed, busy, ready, collapsed, unread, quickAskHotkey, onToggle, onSend, onStop, onOpenQuickAsk, onOpenSettings }: Props) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
@@ -57,8 +59,8 @@ export function SidebarChat({ agentName, feed, busy, ready, collapsed, unread, o
         <button className="rail-label" onClick={() => onToggle(false)}>
           和{agentName}对话
         </button>
-        <button className="icon-button" onClick={onOpenQuickAsk} title="快速提问">
-          ⌘⇧Space
+        <button className="icon-button quick-ask-icon" onClick={onOpenQuickAsk} title={`快速提问 (${formatHotkey(quickAskHotkey)})`}>
+          ✦
         </button>
       </aside>
     );
@@ -82,8 +84,8 @@ export function SidebarChat({ agentName, feed, busy, ready, collapsed, unread, o
           </div>
         </div>
         <div className="chat-header-actions">
-          <button className="icon-button" onClick={onOpenQuickAsk} title="快速提问 (⌘⇧Space)">
-            ⌘⇧Space
+          <button className="icon-button quick-ask-icon" onClick={onOpenQuickAsk} title={`快速提问 (${formatHotkey(quickAskHotkey)})`}>
+            ✦
           </button>
           <button className="icon-button" onClick={onOpenSettings} title="设置">
             ⚙

@@ -1,20 +1,26 @@
 import { useEffect, useRef, useState } from "react";
+import type { RuntimeConfigView } from "@yuanfang/shared";
 import { api } from "../lib/api";
+import { applyTheme, applyUiScale } from "../lib/appearance";
+import { formatHotkey } from "../lib/hotkey";
 
 export function QuickAsk() {
   const [text, setText] = useState("");
   const [phase, setPhase] = useState<"idle" | "sending" | "sent">("idle");
   const [reply, setReply] = useState<string | null>(null);
-  const [agentName, setAgentName] = useState("元芳");
+  const [config, setConfig] = useState<RuntimeConfigView | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const agentName = config?.agentName ?? "元芳";
+  const hotkey = config?.quickAskHotkey ?? "CommandOrControl+Shift+Space";
 
   useEffect(() => {
     document.body.classList.add("quick-body");
-    void api.getConfig().then((config) => setAgentName(config.agentName));
+    void api.getConfig().then(setConfig);
     inputRef.current?.focus();
     const unsubscribeEvent = api.onEvent((event) => {
       if (event.type === "log" && event.message === "quick-ask:focus") {
         inputRef.current?.focus();
+        void api.getConfig().then(setConfig);
       }
       if (event.type === "assistant_message" && event.message.agentKind === "system") {
         setReply(event.message.content);
@@ -53,12 +59,19 @@ export function QuickAsk() {
     document.body.dataset.hasReply = reply === null ? "0" : "1";
   }, [reply]);
 
+  useEffect(() => {
+    if (config === null) return;
+    const cleanup = applyTheme(config.theme);
+    applyUiScale(config.uiScale);
+    return cleanup;
+  }, [config?.theme, config?.uiScale]);
+
   return (
     <div className="quick-shell">
       <div className="quick-header">
         <span className="logo-mark tiny" />
         <span className="quick-title">{agentName}</span>
-        <span className="quick-hint">⌘⇧Space 呼出 · Esc 关闭</span>
+        <span className="quick-hint">{formatHotkey(hotkey)} 呼出 · Esc 关闭</span>
       </div>
       <div className="quick-input-row">
         <input

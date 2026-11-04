@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import type { ThemeMode } from "@yuanfang/shared";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -23,6 +24,9 @@ export interface AppConfig {
   worktreePerTask: boolean;
   dailyTokenBudget: number;
   updateFeedUrl: string;
+  quickAskHotkey: string;
+  theme: ThemeMode;
+  uiScale: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -110,7 +114,7 @@ const DEFAULT_PERSONA = `# 系统 Agent 人格
 ## 工作方式
 
 1. 先判断这件事是「闲聊 / 单点问题 / 需要项目」。
-2. 需要项目时，先创建一个项目，写清楚目标、边界和验收标准，再让项目负责人拆解。
+2. 需要项目时，先创建一个项目，写清当前理解：它是做什么的、给谁用、现在处于什么阶段。目标会随进展变化，不要把它写成一次性验收合同。
 3. 只和项目负责人沟通，不越过它直接指挥角色 Agent，除非项目负责人失联。
 4. 需要安装软件、接入 MCP、访问外部账号时，先发起审批，等用户同意后再做。
 5. 每次对话结束前，把值得留下的注意事项写入记忆。
@@ -131,6 +135,15 @@ export async function ensureWorkspace(workspace?: string): Promise<Paths> {
       const persona = await readFile(paths.personaFile, "utf8");
       if (persona.startsWith("# 远方 · 系统 Agent")) {
         await writeFile(paths.personaFile, persona.replaceAll("远方", "元芳"), "utf8");
+      } else if (persona.includes("写清楚目标、边界和验收标准")) {
+        await writeFile(
+          paths.personaFile,
+          persona.replace(
+            "2. 需要项目时，先创建一个项目，写清楚目标、边界和验收标准，再让项目负责人拆解。",
+            "2. 需要项目时，先创建一个项目，写清当前理解：它是做什么的、给谁用、现在处于什么阶段。目标会随进展变化，不要把它写成一次性验收合同。",
+          ),
+          "utf8",
+        );
       }
     } catch {
       // A read-only or malformed persona file is not fatal.
@@ -167,6 +180,9 @@ export async function loadConfig(workspace?: string): Promise<{ config: AppConfi
       stored?.updateFeedUrl ??
       process.env.YUANFANG_UPDATE_URL ??
       "https://github.com/maliang/yuanfang/releases/latest/download",
+    quickAskHotkey: stored?.quickAskHotkey?.trim() || "CommandOrControl+Shift+Space",
+    theme: stored?.theme === "light" || stored?.theme === "system" ? stored.theme : "dark",
+    uiScale: Number.isFinite(stored?.uiScale) ? Math.min(1.4, Math.max(0.8, Number(stored?.uiScale))) : 1,
     createdAt: stored?.createdAt ?? now,
     updatedAt: stored?.updatedAt ?? now,
     ...stored,
@@ -174,6 +190,9 @@ export async function loadConfig(workspace?: string): Promise<{ config: AppConfi
   // Never allow a stale workspace path to win.
   config.workspace = paths.workspace;
   config.projectsDir = stored?.projectsDir ?? paths.projectsDir;
+  config.quickAskHotkey = stored?.quickAskHotkey?.trim() || "CommandOrControl+Shift+Space";
+  config.theme = stored?.theme === "light" || stored?.theme === "system" ? stored.theme : "dark";
+  config.uiScale = Number.isFinite(config.uiScale) ? Math.min(1.4, Math.max(0.8, Number(config.uiScale))) : 1;
   if (stored === undefined) await saveConfig(paths, config);
   return { config, paths };
 }

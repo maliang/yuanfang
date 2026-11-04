@@ -9,6 +9,8 @@ import type {
   ProjectDetail,
   ProjectStatus,
   ProjectSummary,
+  DraftProjectBriefInput,
+  DraftProjectBriefResult,
   RuntimeConfigView,
   RuntimeEvent,
   RuntimeStatus,
@@ -91,6 +93,9 @@ export interface YuanfangApi {
   respondLoginPrompt(input: { loginId: string; promptId: string; value: string }): Promise<void>;
   cancelProviderLogin(loginId: string): Promise<void>;
   updateConfig(input: UpdateConfigInput): Promise<RuntimeConfigView>;
+  draftProjectBrief(input: DraftProjectBriefInput): Promise<DraftProjectBriefResult>;
+  chooseFolder(defaultPath?: string): Promise<string | null>;
+  setZoom(factor: number): Promise<void>;
   getSkills(input?: { projectId?: string | null }): Promise<SkillInfo[]>;
   saveSkill(input: {
     name: string;

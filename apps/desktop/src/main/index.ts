@@ -36,6 +36,8 @@ let quitting = false;
 let updaterUrl = "";
 let updaterReady = false;
 let updaterCheckStarted = false;
+let quickAskHotkey = "CommandOrControl+Shift+Space";
+let quickAskRegistered = false;
 let markBooted: (() => void) | undefined;
 const bootCompleted = new Promise<void>((resolve) => {
   markBooted = resolve;
@@ -284,7 +286,7 @@ async function runE2E(window: BrowserWindow): Promise<void> {
     }
 
     const clicked = await execute<boolean>(`(() => {
-      const button = [...document.querySelectorAll('button')].find((item) => item.textContent?.includes('创建一个项目'));
+      const button = [...document.querySelectorAll('.topbar button')].find((item) => item.textContent?.includes('新项目'));
       if (!button) return false;
       button.click();
       return true;
@@ -306,9 +308,18 @@ async function runE2E(window: BrowserWindow): Promise<void> {
       modal: Boolean(document.querySelector('.modal')),
       heading: document.querySelector('.modal h2')?.textContent ?? null,
       selects: document.querySelectorAll('.modal select').length,
-      persona: Boolean(document.querySelector('.persona-editor'))
+      tabs: document.querySelectorAll('.settings-nav-item').length,
+      themes: document.querySelectorAll('.theme-option').length,
+      scales: document.querySelectorAll('.scale-option').length
     })`);
     await writeFile(join(directory, "settings.png"), (await window.webContents.capturePage()).toPNG());
+    await execute(`[...document.querySelectorAll('.settings-nav-item')].find((item) => item.textContent?.includes('身份'))?.click()`);
+    await wait(350);
+    results.settingsIdentity = await execute(`({
+      persona: Boolean(document.querySelector('.persona-editor')),
+      identity: Boolean(document.querySelector('.settings-content'))
+    })`);
+    await writeFile(join(directory, "settings-identity.png"), (await window.webContents.capturePage()).toPNG());
 
     await execute(`document.querySelector('.modal .icon-button')?.click()`);
     await wait(300);
@@ -335,7 +346,7 @@ async function runE2E(window: BrowserWindow): Promise<void> {
 function trayMenu(): Electron.MenuItemConstructorOptions[] {
   return [
     { label: `打开${agentName}`, click: () => showMain() },
-    { label: "快速提问", accelerator: "CommandOrControl+Shift+Space", click: () => toggleQuickAsk() },
+    { label: "快速提问", accelerator: quickAskHotkey, click: () => toggleQuickAsk() },
     { type: "separator" },
     {
       label: "打开工作区",
@@ -481,7 +492,7 @@ function appMenu(): Electron.MenuItemConstructorOptions[] {
       label: agentName,
       submenu: [
         { label: "打开主窗口", accelerator: "CommandOrControl+0", click: () => showMain() },
-        { label: "快速提问", accelerator: "CommandOrControl+Shift+Space", click: () => toggleQuickAsk() },
+        { label: "快速提问", accelerator: quickAskHotkey, click: () => toggleQuickAsk() },
         { label: "审批", click: () => showMain({ view: "approvals" }) },
         { label: "记忆", click: () => showMain({ view: "memory" }) },
         { label: "检查更新", click: () => checkForUpdates(true) },
@@ -512,8 +523,36 @@ function status(): RuntimeStatus {
     activeRuns: 0,
     pendingApprovals: 0,
     runningTasks: 0,
-    quickAskHotkey: "CommandOrControl+Shift+Space",
+    quickAskHotkey,
   };
+}
+
+function rebuildMenus(): void {
+  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenu()));
+  if (tray !== undefined) tray.setContextMenu(Menu.buildFromTemplate(trayMenu()));
+}
+
+/** Register the configured accelerator. Returns false and restores the old one on conflict. */
+function registerQuickAskHotkey(accelerator: string): boolean {
+  const next = accelerator.trim();
+  if (next.length === 0) return false;
+  const previous = quickAskHotkey;
+  if (quickAskRegistered && previous === next) return true;
+  if (quickAskRegistered) {
+    globalShortcut.unregister(previous);
+    quickAskRegistered = false;
+  }
+  const registered = globalShortcut.register(next, () => toggleQuickAsk());
+  if (!registered) {
+    if (previous !== next) {
+      quickAskRegistered = globalShortcut.register(previous, () => toggleQuickAsk());
+    }
+    return false;
+  }
+  quickAskHotkey = next;
+  quickAskRegistered = true;
+  rebuildMenus();
+  return true;
 }
 
 async function boot(): Promise<void> {
@@ -570,6 +609,22 @@ function registerIpc(): void {
     const rt = requireRuntime();
     const project = await rt.createProject(input);
     return rt.projectRecordView(project.id);
+  });
+  handle<{ name: string; path?: string }>(IPC.draftProjectBrief, (input) =>
+    requireRuntime().draftProjectBrief(input),
+  );
+  handle<string | undefined>(IPC.chooseFolder, async (defaultPath) => {
+    const options: Electron.OpenDialogOptions = {
+      title: "选择项目文件夹",
+      buttonLabel: "选择",
+      properties: ["openDirectory", "createDirectory"],
+      ...(defaultPath === undefined || defaultPath.length === 0 ? {} : { defaultPath }),
+    };
+    const result =
+      mainWindow === undefined
+        ? await dialog.showOpenDialog(options)
+        : await dialog.showOpenDialog(mainWindow, options);
+    return result.canceled ? null : (result.filePaths[0] ?? null);
   });
   handle<{ projectId: string; status: ProjectStatus }>(IPC.updateProject, (input) => {
     const current = requireRuntime().getProjectRecord(input.projectId);
@@ -647,10 +702,23 @@ function registerIpc(): void {
   );
   handle<string>(IPC.cancelProviderLogin, (loginId) => requireRuntime().cancelProviderLogin(loginId));
   handle<UpdateConfigInput>(IPC.updateConfig, async (input) => {
-    const updated = await requireRuntime().updateConfig(input);
+    const rt = requireRuntime();
+    const previousHotkey = rt.configView().quickAskHotkey;
+    const updated = await rt.updateConfig(input);
+    if (!E2E && input.quickAskHotkey !== undefined && updated.quickAskHotkey !== previousHotkey) {
+      if (!registerQuickAskHotkey(updated.quickAskHotkey)) {
+        await rt.updateConfig({ quickAskHotkey: previousHotkey });
+        throw new Error("这个快捷键无法注册，可能已被系统或其他应用占用，请换一个组合。");
+      }
+    }
     applyAgentName(updated.agentName);
     void configureUpdater(updated.updateFeedUrl);
     return updated;
+  });
+  ipcMain.handle(IPC.setZoom, (event, factor: unknown) => {
+    if (event.sender.isDestroyed()) return;
+    const scale = typeof factor === "number" && Number.isFinite(factor) ? Math.min(1.4, Math.max(0.8, factor)) : 1;
+    event.sender.setZoomFactor(scale);
   });
   handle<{ projectId?: string | null }>(IPC.getSkills, async (input) => {
     const rt = requireRuntime();
@@ -692,12 +760,15 @@ if (!gotLock) {
 
     registerIpc();
     mainWindow = createMainWindow();
-    if (!E2E) {
-      createTray();
-      const registered = globalShortcut.register("CommandOrControl+Shift+Space", () => toggleQuickAsk());
-      if (!registered) console.warn("[元芳] shortcut registration failed");
-    }
+    if (!E2E) createTray();
     await boot();
+    if (!E2E && runtime !== undefined) {
+      if (!registerQuickAskHotkey(runtime.configView().quickAskHotkey)) {
+        console.warn("[元芳] shortcut registration failed");
+      }
+    } else if (runtime !== undefined) {
+      quickAskHotkey = runtime.configView().quickAskHotkey;
+    }
   });
 
   app.on("activate", () => showMain());

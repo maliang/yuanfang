@@ -13,7 +13,9 @@ import type {
   TaskSummary,
 } from "@yuanfang/shared";
 import { api } from "./lib/api";
+import { applyTheme, applyUiScale } from "./lib/appearance";
 import { formatTokens } from "./lib/format";
+import { formatHotkey } from "./lib/hotkey";
 import { SidebarChat } from "./components/SidebarChat";
 import { ProjectCard } from "./components/ProjectCard";
 import { ProjectWorkspace } from "./components/ProjectWorkspace";
@@ -61,6 +63,7 @@ function MainApp() {
   const collapsedRef = useRef(collapsed);
   collapsedRef.current = collapsed;
   const agentName = config?.agentName ?? "元芳";
+  const quickAskHotkey = config?.quickAskHotkey ?? status?.quickAskHotkey ?? "CommandOrControl+Shift+Space";
 
   selectedProjectRef.current = selectedProjectId;
 
@@ -310,6 +313,13 @@ function MainApp() {
   }, [agentName]);
 
   useEffect(() => {
+    if (config === null) return;
+    const cleanup = applyTheme(config.theme);
+    applyUiScale(config.uiScale);
+    return cleanup;
+  }, [config?.theme, config?.uiScale]);
+
+  useEffect(() => {
     if (selectedProjectId === null) {
       setDetail(null);
       return;
@@ -527,7 +537,7 @@ function MainApp() {
             />
           ) : (
             <>
-              <section className="hero">
+              {projects.length === 0 ? <section className="hero">
                 <div>
                   <p className="hero-eyebrow">系统 Agent · 项目负责人 · 角色 Agent</p>
                   <h1>把一件事交给{agentName}，<br />然后去忙别的。</h1>
@@ -535,9 +545,6 @@ function MainApp() {
                     它判断需求、创建项目、盯住进度。任务在后台并行，同一个文件会自动排队。你只需要和它说话。
                   </p>
                   <div className="hero-actions">
-                    <button className="primary-button" onClick={() => setPanel("new-project")}>
-                      创建一个项目
-                    </button>
                     <button className="ghost-button" onClick={() => setCollapsed(false)}>
                       和{agentName}聊聊
                     </button>
@@ -561,7 +568,7 @@ function MainApp() {
                     <span>待审批</span>
                   </div>
                 </div>
-              </section>
+              </section> : null}
 
               <section className="projects-section">
                 <div className="section-head">
@@ -588,11 +595,8 @@ function MainApp() {
                     <p>
                       {archivedCount > 0
                         ? "归档项目还在，点上面的「显示归档」可以回看。"
-                        : `告诉${agentName}你想做什么，它会把第一件事变成项目。`}
+                        : `点右上角「+ 新项目」，或者直接告诉${agentName}你想做什么。`}
                     </p>
-                    <button className="primary-button" onClick={() => setPanel("new-project")}>
-                      创建第一个项目
-                    </button>
                   </div>
                 ) : (
                   <div className="project-grid">
@@ -604,7 +608,7 @@ function MainApp() {
               </section>
 
               <footer className="app-footer">
-                <span>⌘⇧Space 随时呼出快速提问</span>
+                <span>按 {formatHotkey(quickAskHotkey)} 随时呼出快速提问</span>
                 <span>{status?.workspace ?? "~/.yuanfang"}</span>
                 <span>实时同步</span>
               </footer>
@@ -622,7 +626,8 @@ function MainApp() {
           onToggle={setCollapsed}
           onSend={sendChat}
           onStop={stopSystem}
-          onOpenQuickAsk={() => pushToast("快速提问", "按 ⌘⇧Space 呼出输入框", "info")}
+          quickAskHotkey={quickAskHotkey}
+          onOpenQuickAsk={() => pushToast("快速提问", `按 ${formatHotkey(quickAskHotkey)} 呼出输入框`, "info")}
           onOpenSettings={() => setPanel("settings")}
         />
       </main>

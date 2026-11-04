@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -36,6 +36,8 @@ import type {
   ApprovalStatus,
   ChatMessage,
   ChatSendResult,
+  DraftProjectBriefInput,
+  DraftProjectBriefResult,
   FileLockInfo,
   ModelOption,
   ProjectDetail,
@@ -197,7 +199,11 @@ export class YuanfangRuntime implements RuntimeHost {
     const { config, paths } = await loadConfig(options.workspace);
     this.config = config;
     this.paths = paths;
-    this.#status = { ...this.#status, workspace: paths.workspace };
+    this.#status = {
+      ...this.#status,
+      workspace: paths.workspace,
+      quickAskHotkey: config.quickAskHotkey,
+    };
 
     this.store = new AppStore(openDatabase(paths.database), options.now ?? Date.now);
     this.indexer = new ProjectIndexer();
@@ -678,6 +684,9 @@ export class YuanfangRuntime implements RuntimeHost {
       worktreePerTask: this.config.worktreePerTask,
       dailyTokenBudget: this.config.dailyTokenBudget,
       updateFeedUrl: this.config.updateFeedUrl,
+      quickAskHotkey: this.config.quickAskHotkey,
+      theme: this.config.theme,
+      uiScale: this.config.uiScale,
       persona,
       personaPath: this.paths.personaFile,
       defaultProjectDir: this.paths.projectsDir,
@@ -722,6 +731,13 @@ export class YuanfangRuntime implements RuntimeHost {
         ? {}
         : { dailyTokenBudget: Math.max(0, Math.floor(input.dailyTokenBudget)) }),
       ...(input.updateFeedUrl === undefined ? {} : { updateFeedUrl: input.updateFeedUrl.trim() }),
+      ...(input.quickAskHotkey === undefined || input.quickAskHotkey.trim().length === 0
+        ? {}
+        : { quickAskHotkey: input.quickAskHotkey.trim() }),
+      ...(input.theme === undefined ? {} : { theme: input.theme }),
+      ...(input.uiScale === undefined || !Number.isFinite(input.uiScale)
+        ? {}
+        : { uiScale: Math.min(1.4, Math.max(0.8, Math.round(input.uiScale * 100) / 100)) }),
     };
     this.config = next;
     await saveConfig(this.paths, next);
@@ -757,6 +773,7 @@ export class YuanfangRuntime implements RuntimeHost {
     for (const project of this.store.listProjectRecords()) {
       this.store.setKv(`project_model:${project.id}`, `${next.projectProvider}/${next.projectModel}`);
     }
+    this.#status = { ...this.#status, quickAskHotkey: next.quickAskHotkey };
     this.#emit({ type: "status", status: this.status() });
     return this.configViewWithPersona();
   }
@@ -1332,6 +1349,125 @@ export class YuanfangRuntime implements RuntimeHost {
 
   // ── projects / tasks ─────────────────────────────────────────────────────
 
+  async draftProjectBrief(input: DraftProjectBriefInput): Promise<DraftProjectBriefResult> {
+    const name = input.name.trim() || "未命名项目";
+    const rawPath = input.path?.trim();
+    let directory: string | undefined;
+    let existing = false;
+    let fileCount = 0;
+    let readme = "";
+    let topLevel: string[] = [];
+    let fileSamples = "";
+    if (rawPath !== undefined && rawPath.length > 0) {
+      directory = resolve(rawPath);
+      if (directory === "/" || directory === homedir()) {
+        throw new Error("不能把 / 或用户主目录直接作为项目目录；请选一个子目录");
+      }
+      try {
+        const info = await stat(directory);
+        existing = info.isDirectory();
+      } catch {
+        existing = false;
+      }
+      if (existing) {
+        try {
+          const [files, top, readmeText] = await Promise.all([
+            this.indexer.scan(directory),
+            this.indexer.topLevel(directory),
+            this.indexer.readme(directory),
+          ]);
+          fileCount = files.length;
+          topLevel = top;
+          readme = readmeText.slice(0, 5000);
+          fileSamples = files
+            .slice(0, 80)
+            .map((file) => [file.path, file.language, file.summary].filter(Boolean).join(" · "))
+            .join("\n");
+        } catch {
+          // Best-effort preview; creation will surface real filesystem errors.
+        }
+      }
+    }
+    const fallback = this.#fallbackProjectBrief(name, existing, fileCount, readme, topLevel);
+    const model = this.models.getModel(this.config.projectProvider, this.config.projectModel);
+    if (model === undefined) {
+      return {
+        brief: fallback,
+        fileCount,
+        existing,
+        ai: false,
+        warning: `模型 ${this.config.projectProvider}/${this.config.projectModel} 不可用，已用本地目录摘要填充简介。`,
+      };
+    }
+    try {
+      const contextText = [
+        `项目名：${name}`,
+        `目录：${directory ?? "（尚未创建，将自动生成）"}`,
+        `状态：${existing ? `已存在的目录，索引到 ${fileCount} 个文件` : "新目录"}`,
+        topLevel.length > 0 ? `顶层结构：${topLevel.join("、")}` : "",
+        readme.length > 0 ? `README 摘要：\n${readme}` : "",
+        fileSamples.length > 0 ? `文件样本：\n${fileSamples}` : "",
+      ]
+        .filter((line) => line.length > 0)
+        .join("\n");
+      const message = await this.models.complete(
+        model,
+        {
+          systemPrompt:
+            "你是元芳，一个务实的软件项目参谋长。请根据用户提供的项目名、目录、README 和文件样本，用中文写一段项目简介。简介只描述：这个项目是什么、给谁用、当前技术栈/结构、目前处于什么阶段。不要写目标承诺、验收标准、实施计划或客套话；不要使用 Markdown；直接输出一段 80-180 字的正文。",
+          messages: [
+            {
+              role: "user",
+              content: `${contextText}\n\n请直接输出项目简介：`,
+              timestamp: Date.now(),
+            },
+          ],
+        },
+        { maxTokens: 320, temperature: 0.3, timeoutMs: 30_000 },
+      );
+      const brief = textOfAssistant(message)
+        .replace(/^["'“”]+|["'“”]+$/g, "")
+        .replace(/[\r\n]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 600);
+      if (brief.length === 0) throw new Error("模型返回了空简介");
+      return { brief, fileCount, existing, ai: true, warning: null };
+    } catch (error) {
+      return {
+        brief: fallback,
+        fileCount,
+        existing,
+        ai: false,
+        warning: `AI 简介生成失败：${error instanceof Error ? error.message : String(error)}。已用本地目录摘要填充，可以手动修改。`,
+      };
+    }
+  }
+
+  #fallbackProjectBrief(
+    name: string,
+    existing: boolean,
+    fileCount: number,
+    readme: string,
+    topLevel: string[],
+  ): string {
+    if (!existing) {
+      return `${name} 是一个新建项目，当前还没有代码。项目负责人会在启动后结合目录和对话逐步建立对项目的理解，并在执行过程中持续更新。`;
+    }
+    const readmeLine = readme
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^#+\s*/, "").trim())
+      .find((line) => line.length > 0 && !line.startsWith("```") && !line.startsWith("!"));
+    const shape = topLevel.slice(0, 8).join("、");
+    return [
+      `已存在的项目目录，当前索引到 ${fileCount} 个文件${shape.length > 0 ? `，顶层包含 ${shape}` : ""}。`,
+      readmeLine === undefined ? "" : readmeLine.slice(0, 240),
+      "项目负责人会在启动后结合代码索引进一步理解项目。",
+    ]
+      .filter((part) => part.length > 0)
+      .join(" ");
+  }
+
   async createProject(input: { name: string; brief: string; path?: string }): Promise<ProjectRecord> {
     const projectId = uid("prj");
     let directory = input.path === undefined ? join(this.paths.projectsDir, slugify(input.name)) : resolve(input.path);
@@ -1396,7 +1532,7 @@ export class YuanfangRuntime implements RuntimeHost {
       [
         `[系统] 项目已经创建。`,
         `名称：${input.name}`,
-        `目标与边界：${input.brief}`,
+        `项目简介：${input.brief}`,
         `工作目录：${directory}`,
         `文件索引：${count} 个文件`,
         "",

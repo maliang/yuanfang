@@ -393,7 +393,7 @@ function buildSystemTools(host: RuntimeHost): ToolRegistration[] {
       "Create a project: a directory, a project lead agent, and an empty task board. Use when the user's request needs sustained work.",
     parameters: obj({
       name: str({ description: "Short project name" }),
-      brief: str({ description: "Goal, scope, constraints, acceptance criteria" }),
+      brief: str({ description: "Current project understanding: what it is, who it serves, and its present state. Goals evolve; do not write a one-off acceptance contract." }),
       path: opt(str({ description: "Absolute path; defaults to the workspace projects directory" })),
     }),
     execute: async (args) => {

@@ -6,6 +6,8 @@
 
 export type AgentKind = "system" | "project" | "role";
 
+export type ThemeMode = "dark" | "light" | "system";
+
 export type ProjectStatus = "active" | "paused" | "archived";
 
 export type TaskStatus =
@@ -278,6 +280,9 @@ export interface RuntimeConfigView {
   worktreePerTask: boolean;
   dailyTokenBudget: number;
   updateFeedUrl: string;
+  quickAskHotkey: string;
+  theme: ThemeMode;
+  uiScale: number;
   persona: string;
   personaPath: string;
   defaultProjectDir: string;
@@ -300,6 +305,9 @@ export interface UpdateConfigInput {
   worktreePerTask?: boolean;
   dailyTokenBudget?: number;
   updateFeedUrl?: string;
+  quickAskHotkey?: string;
+  theme?: ThemeMode;
+  uiScale?: number;
   persona?: string;
 }
 
@@ -320,6 +328,19 @@ export interface AddProjectInput {
   name: string;
   brief: string;
   path?: string;
+}
+
+export interface DraftProjectBriefInput {
+  name: string;
+  path?: string;
+}
+
+export interface DraftProjectBriefResult {
+  brief: string;
+  fileCount: number;
+  existing: boolean;
+  ai: boolean;
+  warning: string | null;
 }
 
 export interface CreateTaskInput {
@@ -499,6 +520,9 @@ export const IPC = {
   respondLoginPrompt: "yf:respondLoginPrompt",
   cancelProviderLogin: "yf:cancelProviderLogin",
   updateConfig: "yf:updateConfig",
+  draftProjectBrief: "yf:draftProjectBrief",
+  chooseFolder: "yf:chooseFolder",
+  setZoom: "yf:setZoom",
   getSkills: "yf:getSkills",
   saveSkill: "yf:saveSkill",
   readSkill: "yf:readSkill",
