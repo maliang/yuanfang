@@ -122,9 +122,9 @@ apps/desktop/
 推送 `v*` tag 会触发 GitHub Actions：
 
 ```bash
-# 先把 apps/desktop/package.json 的 version 改成 0.2.2
-git tag v0.2.2
-git push origin v0.2.2
+# 先把 apps/desktop/package.json 的 version 改成 0.2.3
+git tag v0.2.3
+git push origin v0.2.3
 ```
 
 工作流会分别构建：

@@ -104,7 +104,7 @@ jobs:
           if-no-files-found: error
 
   build-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -116,6 +116,10 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Install Linux packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2 libarchive-tools
       - name: Build Linux x64
         run: |
           npm run build
