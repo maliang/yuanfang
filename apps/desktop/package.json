@@ -1,6 +1,6 @@
 {
   "name": "@yuanfang/desktop",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
@@ -105,7 +105,13 @@
       ],
       "category": "Utility",
       "icon": "resources/icon.png",
-      "artifactName": "Yuanfang-${version}-${arch}.${ext}"
+      "artifactName": "Yuanfang-${version}-${arch}.${ext}",
+      "executableName": "yuanfang",
+      "syncDesktopName": true
+    },
+    "toolsets": {
+      "appimage": "1.0.3"
     }
-  }
+  },
+  "desktopName": "yuanfang"
 }
