@@ -40,6 +40,13 @@ const api = {
   saveProviderKey: (input: { providerId: string; key: string; env?: Record<string, string> }) =>
     ipcRenderer.invoke(IPC.saveProviderKey, input),
   removeProviderKey: (providerId: string) => ipcRenderer.invoke(IPC.removeProviderKey, providerId),
+  importPiCredentials: () => ipcRenderer.invoke(IPC.importPiCredentials),
+  getRoles: () => ipcRenderer.invoke(IPC.getRoles),
+  saveRole: (input: unknown) => ipcRenderer.invoke(IPC.saveRole, input),
+  beginProviderLogin: (providerId: string) => ipcRenderer.invoke(IPC.beginProviderLogin, providerId),
+  respondLoginPrompt: (input: { loginId: string; promptId: string; value: string }) =>
+    ipcRenderer.invoke(IPC.respondLoginPrompt, input),
+  cancelProviderLogin: (loginId: string) => ipcRenderer.invoke(IPC.cancelProviderLogin, loginId),
   updateConfig: (input: unknown) => ipcRenderer.invoke(IPC.updateConfig, input),
   getSkills: (input?: { projectId?: string | null }) => ipcRenderer.invoke(IPC.getSkills, input),
   saveSkill: (input: unknown) => ipcRenderer.invoke(IPC.saveSkill, input),
@@ -56,6 +63,7 @@ const api = {
   quickAsk: (text: string) => ipcRenderer.invoke(IPC.quickAsk, { text }),
   hideQuickAsk: () => ipcRenderer.send(IPC.hideQuickAsk),
   openMain: () => ipcRenderer.send(IPC.openMain),
+  checkForUpdates: () => ipcRenderer.invoke(IPC.checkForUpdates),
   onEvent: (callback: (event: RuntimeEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: RuntimeEvent) => callback(payload);
     ipcRenderer.on(IPC.event, handler);

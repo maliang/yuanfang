@@ -20,6 +20,9 @@ export interface AppConfig {
   maxTurns: number;
   maxConcurrentTasks: number;
   notifyLevel: "all" | "important" | "off";
+  worktreePerTask: boolean;
+  dailyTokenBudget: number;
+  updateFeedUrl: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -158,6 +161,12 @@ export async function loadConfig(workspace?: string): Promise<{ config: AppConfi
     maxTurns: stored?.maxTurns ?? 80,
     maxConcurrentTasks: stored?.maxConcurrentTasks ?? 4,
     notifyLevel: stored?.notifyLevel ?? "all",
+    worktreePerTask: stored?.worktreePerTask ?? false,
+    dailyTokenBudget: stored?.dailyTokenBudget ?? 0,
+    updateFeedUrl:
+      stored?.updateFeedUrl ??
+      process.env.YUANFANG_UPDATE_URL ??
+      "https://github.com/maliang/yuanfang/releases/latest/download",
     createdAt: stored?.createdAt ?? now,
     updatedAt: stored?.updatedAt ?? now,
     ...stored,

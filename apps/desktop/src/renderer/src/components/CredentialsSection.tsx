@@ -1,5 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import type { ModelOption, ProviderModelsResult, ProviderView } from "@yuanfang/shared";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type {
+  LoginEventView,
+  LoginPromptView,
+  ModelOption,
+  ProviderModelsResult,
+  ProviderView,
+} from "@yuanfang/shared";
 import { api } from "../lib/api";
 import { formatTokens } from "../lib/format";
 
@@ -19,6 +25,13 @@ export function CredentialsSection({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [loginId, setLoginId] = useState<string | null>(null);
+  const [loginMessage, setLoginMessage] = useState<string | null>(null);
+  const [loginPrompt, setLoginPrompt] = useState<LoginPromptView | null>(null);
+  const [loginValue, setLoginValue] = useState("");
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const loginIdRef = useRef<string | null>(null);
 
   const loadProviders = async (preferred?: string) => {
     const list = await api.getProviders();
@@ -41,10 +54,49 @@ export function CredentialsSection({
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
+
+function loginMessageOf(event: LoginEventView): string {
+  switch (event.type) {
+    case "info":
+      return event.message;
+    case "auth_url":
+      return event.instructions ?? "已在浏览器打开授权页面，请完成登录。";
+    case "device_code":
+      return `在 ${event.verificationUri} 输入代码 ${event.userCode}`;
+    case "progress":
+      return event.message;
+  }
+}
   };
 
   useEffect(() => {
     void loadProviders();
+    const unsubscribe = api.onEvent((event) => {
+      if (event.type === "login_prompt") {
+        if (event.loginId !== loginIdRef.current) return;
+        setLoginPrompt(event.prompt);
+        setLoginValue(event.prompt.options?.[0]?.id ?? "");
+        return;
+      }
+      if (event.type === "login_event") {
+        if (event.loginId !== loginIdRef.current) return;
+        setLoginMessage(loginMessageOf(event.event));
+        return;
+      }
+      if (event.type === "login_done") {
+        if (event.loginId !== loginIdRef.current) return;
+        loginIdRef.current = null;
+        setLoginId(null);
+        setLoginPrompt(null);
+        if (!event.ok) {
+          setLoginError(event.error ?? "登录失败");
+        } else {
+          setNotice("OAuth 登录成功");
+          void loadProviders(event.providerId);
+        }
+      }
+    });
+    return unsubscribe;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -128,6 +180,42 @@ export function CredentialsSection({
     }
   };
 
+  const beginLogin = async () => {
+    if (detail === null) return;
+    setLoginError(null);
+    setNotice(null);
+    setLoginMessage(null);
+    setLoginPrompt(null);
+    try {
+      const result = await api.beginProviderLogin(detail.provider.id);
+      loginIdRef.current = result.loginId;
+      setLoginId(result.loginId);
+      setLoginMessage("正在启动 OAuth 登录…");
+    } catch (caught) {
+      setLoginError(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
+  const respond = async () => {
+    if (loginId === null || loginPrompt === null) return;
+    try {
+      await api.respondLoginPrompt({ loginId, promptId: loginPrompt.id, value: loginValue });
+      setLoginPrompt(null);
+      setLoginValue("");
+    } catch (caught) {
+      setLoginError(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
+  const cancelLogin = async () => {
+    if (loginId === null) return;
+    await api.cancelProviderLogin(loginId);
+    loginIdRef.current = null;
+    setLoginId(null);
+    setLoginPrompt(null);
+    setLoginMessage("登录已取消");
+  };
+
   const provider = detail?.provider;
   const models: ModelOption[] = detail?.models ?? [];
 
@@ -135,8 +223,26 @@ export function CredentialsSection({
     <section className="settings-section">
       <h3>厂商与凭据</h3>
       <p className="muted small">
-        凭据会写入 ~/.yuanfang/auth.json（600）。如果某项来自 Pi，会标为「来自 Pi」，这里不会删除 Pi 的登录。
+        元芳内嵌 Pi Durable / pi-ai，不需要另外安装 Pi。凭据写入 ~/.yuanfang/auth.json（600）；如果本机有 Pi 登录，可以一键导入作为可选来源，删除时不会删除 Pi 的登录。
       </p>
+      <div className="credential-import">
+        <button
+          className="ghost-button small"
+          disabled={importing}
+          onClick={() => {
+            setImporting(true);
+            void api
+              .importPiCredentials()
+              .then(async (count) => {
+                setNotice(count > 0 ? `已从 Pi 导入 ${count} 个厂商凭据` : "没有发现可导入的 Pi 凭据");
+                await loadProviders();
+              })
+              .finally(() => setImporting(false));
+          }}
+        >
+          {importing ? "导入中…" : "从 Pi 导入凭据（可选）"}
+        </button>
+      </div>
       <p className="muted small">点模型行的「系统 / 项目 / 角色」会填入上方对应模型，保存设置后生效。</p>
       <div className="credentials-layout">
         <div className="provider-column">
@@ -221,11 +327,57 @@ export function CredentialsSection({
                     </button>
                   </div>
                 </div>
-              ) : (
-                <div className="conversation-note">
-                  该厂商使用 OAuth。请先在 Pi 中完成登录，远方会自动复用 Pi 的凭据。
+              ) : null}
+
+              {provider.oauthName !== null ? (
+                <div className="oauth-box">
+                  <div>
+                    <strong>OAuth</strong>
+                    <p>{provider.oauthName}{provider.configured && provider.origin === "pi" ? " · 当前来自 Pi" : ""}</p>
+                  </div>
+                  {loginId === null ? (
+                    <button className="ghost-button" onClick={() => void beginLogin()}>
+                      {provider.configured ? "重新登录" : "登录"}
+                    </button>
+                  ) : (
+                    <button className="ghost-button danger" onClick={() => void cancelLogin()}>
+                      取消登录
+                    </button>
+                  )}
+                  {loginMessage !== null ? <p className="muted small">{loginMessage}</p> : null}
+                  {loginError !== null ? <div className="form-error">{loginError}</div> : null}
+                  {loginPrompt !== null ? (
+                    <div className="login-prompt">
+                      <label>
+                        {loginPrompt.message}
+                        {loginPrompt.type === "select" ? (
+                          <select value={loginValue} onChange={(event) => setLoginValue(event.target.value)}>
+                            {loginPrompt.options?.map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            type={loginPrompt.type === "secret" ? "password" : "text"}
+                            value={loginValue}
+                            placeholder={loginPrompt.placeholder ?? ""}
+                            autoFocus
+                            onChange={(event) => setLoginValue(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") void respond();
+                            }}
+                          />
+                        )}
+                      </label>
+                      <button className="primary-button" onClick={() => void respond()}>
+                        提交
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
-              )}
+              ) : null}
 
               {error !== null ? <div className="form-error">{error}</div> : null}
               {notice !== null ? <div className="form-notice">{notice}</div> : null}
@@ -271,4 +423,17 @@ export function CredentialsSection({
       </div>
     </section>
   );
+}
+
+function loginMessageOf(event: LoginEventView): string {
+  switch (event.type) {
+    case "info":
+      return event.message;
+    case "auth_url":
+      return event.instructions ?? "已在浏览器打开授权页面，请完成登录。";
+    case "device_code":
+      return `在 ${event.verificationUri} 输入代码 ${event.userCode}`;
+    case "progress":
+      return event.message;
+  }
 }

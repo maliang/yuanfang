@@ -1,5 +1,7 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, Notification, screen, shell, Tray } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, screen, shell, Tray } from "electron";
 import { join } from "node:path";
+type AutoUpdater = import("electron-updater").AppUpdater;
+let autoUpdater: AutoUpdater | undefined;
 import { tmpdir } from "node:os";
 import { mkdir, writeFile } from "node:fs/promises";
 import { YuanfangRuntime } from "@yuanfang/core";
@@ -31,6 +33,9 @@ let mainWindow: BrowserWindow | undefined;
 let quickWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let quitting = false;
+let updaterUrl = "";
+let updaterReady = false;
+let updaterCheckStarted = false;
 let markBooted: (() => void) | undefined;
 const bootCompleted = new Promise<void>((resolve) => {
   markBooted = resolve;
@@ -349,6 +354,87 @@ function trayMenu(): Electron.MenuItemConstructorOptions[] {
   ];
 }
 
+async function loadUpdater(): Promise<AutoUpdater | undefined> {
+  if (autoUpdater !== undefined) return autoUpdater;
+  try {
+    const module = await import("electron-updater");
+    autoUpdater = module.autoUpdater;
+    return autoUpdater;
+  } catch (error) {
+    console.error("[元芳] electron-updater unavailable", error);
+    return undefined;
+  }
+}
+
+function setupUpdater(updater: AutoUpdater): void {
+  if (updaterReady) return;
+  updaterReady = true;
+  updater.autoDownload = false;
+  updater.autoInstallOnAppQuit = true;
+  updater.on("update-available", (info) => {
+    void dialog
+      .showMessageBox({
+        type: "info",
+        title: "发现新版本",
+        message: `元芳 ${info.version} 可用，当前版本 ${app.getVersion()}。`,
+        detail: "同意后会下载并在完成后自动重启安装。",
+        buttons: ["现在更新", "稍后"],
+        defaultId: 0,
+        cancelId: 1,
+      })
+      .then((result) => {
+        if (result.response === 0) void updater.downloadUpdate();
+      });
+  });
+  updater.on("update-downloaded", () => {
+    if (Notification.isSupported()) {
+      new Notification({ title: "元芳更新已下载", body: "即将重启安装新版本。" }).show();
+    }
+    setTimeout(() => updater.quitAndInstall(), 1_000);
+  });
+  updater.on("error", (error) => {
+    console.error("[元芳] update failed", error);
+  });
+}
+
+async function configureUpdater(url: string): Promise<void> {
+  updaterUrl = url.trim();
+  if (!app.isPackaged || updaterUrl.length === 0) return;
+  const updater = await loadUpdater();
+  if (updater === undefined) return;
+  setupUpdater(updater);
+  try {
+    updater.setFeedURL({ provider: "generic", url: updaterUrl });
+  } catch (error) {
+    console.error("[元芳] updater feed failed", error);
+    return;
+  }
+  if (!updaterCheckStarted) {
+    updaterCheckStarted = true;
+    setTimeout(() => void checkForUpdates(false), 5_000);
+  }
+}
+
+async function checkForUpdates(interactive: boolean): Promise<void> {
+  if (!app.isPackaged) {
+    if (interactive) void dialog.showMessageBox({ type: "info", title: "检查更新", message: "开发模式不支持自动更新，请使用打包后的应用。" });
+    return;
+  }
+  if (updaterUrl.length === 0) {
+    if (interactive) void dialog.showMessageBox({ type: "info", title: "检查更新", message: "还没有配置更新源。请在设置里填写 latest-mac.yml 的地址。" });
+    return;
+  }
+  await configureUpdater(updaterUrl);
+  const updater = await loadUpdater();
+  try {
+    await updater?.checkForUpdates();
+  } catch (error) {
+    if (interactive) {
+      void dialog.showMessageBox({ type: "error", title: "检查更新失败", message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+}
+
 function createTray(): void {
   const image = nativeImage.createFromPath(resourcePath("trayTemplate.png"));
   image.setTemplateImage(true);
@@ -395,6 +481,7 @@ function appMenu(): Electron.MenuItemConstructorOptions[] {
         { label: "快速提问", accelerator: "CommandOrControl+Shift+Space", click: () => toggleQuickAsk() },
         { label: "审批", click: () => showMain({ view: "approvals" }) },
         { label: "记忆", click: () => showMain({ view: "memory" }) },
+        { label: "检查更新", click: () => checkForUpdates(true) },
       ],
     },
   ];
@@ -430,9 +517,16 @@ async function boot(): Promise<void> {
   try {
     runtime = await YuanfangRuntime.open();
     applyAgentName(runtime.configView().agentName);
+    void configureUpdater(runtime.configView().updateFeedUrl);
     runtime.subscribe((event) => {
       broadcast(event);
       if (event.type === "notification") notify(event);
+      if (event.type === "login_event" && event.event.type === "auth_url") {
+        void shell.openExternal(event.event.url);
+      }
+      if (event.type === "external_url") {
+        void shell.openExternal(event.url);
+      }
     });
     booting = false;
     bootError = null;
@@ -538,9 +632,21 @@ function registerIpc(): void {
     requireRuntime().saveProviderKey(input.providerId, input.key, input.env),
   );
   handle<string>(IPC.removeProviderKey, (providerId) => requireRuntime().removeProviderKey(providerId));
+  handle<void>(IPC.importPiCredentials, () => requireRuntime().importPiCredentials());
+  handle<void>(IPC.getRoles, () => requireRuntime().listRoles());
+  handle<{ name: string; description: string; instructions: string; model: { provider: string; modelId: string } | null }>(
+    IPC.saveRole,
+    (input) => requireRuntime().saveRole(input),
+  );
+  handle<string>(IPC.beginProviderLogin, (providerId) => requireRuntime().beginProviderLogin(providerId));
+  handle<{ loginId: string; promptId: string; value: string }>(IPC.respondLoginPrompt, (input) =>
+    requireRuntime().respondLoginPrompt(input.loginId, input.promptId, input.value),
+  );
+  handle<string>(IPC.cancelProviderLogin, (loginId) => requireRuntime().cancelProviderLogin(loginId));
   handle<UpdateConfigInput>(IPC.updateConfig, async (input) => {
     const updated = await requireRuntime().updateConfig(input);
     applyAgentName(updated.agentName);
+    void configureUpdater(updated.updateFeedUrl);
     return updated;
   });
   handle<{ projectId?: string | null }>(IPC.getSkills, async (input) => {
@@ -570,6 +676,7 @@ function registerIpc(): void {
     if (quickWindow !== undefined && !quickWindow.isDestroyed()) quickWindow.hide();
   });
   ipcMain.on(IPC.openMain, () => showMain());
+  ipcMain.handle(IPC.checkForUpdates, () => checkForUpdates(true));
 }
 
 const gotLock = app.requestSingleInstanceLock();

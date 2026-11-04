@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   last_active_at INTEGER NOT NULL,
+  workflow TEXT NOT NULL DEFAULT '["design","implement","verify","accept"]',
   total_ms INTEGER NOT NULL DEFAULT 0,
   tokens_in INTEGER NOT NULL DEFAULT 0,
   tokens_out INTEGER NOT NULL DEFAULT 0,
@@ -39,6 +40,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   durable_task_id TEXT,
   depends_on TEXT NOT NULL DEFAULT '[]',
   files TEXT NOT NULL DEFAULT '[]',
+  stage TEXT NOT NULL DEFAULT 'implement',
+  worktree_path TEXT,
+  worktree_branch TEXT,
   created_at INTEGER NOT NULL,
   started_at INTEGER,
   finished_at INTEGER,
@@ -157,6 +161,12 @@ CREATE TABLE IF NOT EXISTS approvals (
 );
 CREATE INDEX IF NOT EXISTS approvals_status ON approvals(status, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS usage_daily (
+  day TEXT PRIMARY KEY,
+  tokens INTEGER NOT NULL DEFAULT 0,
+  cost REAL NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS conversation_usage (
   conversation_id TEXT PRIMARY KEY,
   project_id TEXT,
@@ -188,8 +198,20 @@ export function openDatabase(file: string): Database {
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA synchronous = NORMAL");
   db.exec(SCHEMA);
-  const columns = db.prepare("PRAGMA table_info(task_events)").all() as unknown as Array<{ name: string }>;
-  if (!columns.some((column) => column.name === "details")) {
+  const taskColumns = db.prepare("PRAGMA table_info(tasks)").all() as unknown as Array<{ name: string }>;
+  for (const [name, sql] of [
+    ["stage", "ALTER TABLE tasks ADD COLUMN stage TEXT NOT NULL DEFAULT 'implement'"],
+    ["worktree_path", "ALTER TABLE tasks ADD COLUMN worktree_path TEXT"],
+    ["worktree_branch", "ALTER TABLE tasks ADD COLUMN worktree_branch TEXT"],
+  ] as const) {
+    if (!taskColumns.some((column) => column.name === name)) db.exec(sql);
+  }
+  const projectColumns = db.prepare("PRAGMA table_info(projects)").all() as unknown as Array<{ name: string }>;
+  if (!projectColumns.some((column) => column.name === "workflow")) {
+    db.exec(`ALTER TABLE projects ADD COLUMN workflow TEXT NOT NULL DEFAULT '["design","implement","verify","accept"]'`);
+  }
+  const eventColumns = db.prepare("PRAGMA table_info(task_events)").all() as unknown as Array<{ name: string }>;
+  if (!eventColumns.some((column) => column.name === "details")) {
     db.exec("ALTER TABLE task_events ADD COLUMN details TEXT");
   }
   const version = Number((db.prepare("PRAGMA user_version").get() as { user_version?: number } | undefined)?.user_version ?? 0);

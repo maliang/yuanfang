@@ -1,18 +1,24 @@
 {
   "name": "@yuanfang/desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
+  "description": "Yuanfang desktop agent workspace",
+  "author": "Yuanfang",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
-    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit"
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "dist": "electron-vite build && electron-builder --mac",
+    "dist:dir": "electron-vite build && electron-builder --mac --dir"
   },
   "dependencies": {
     "@yuanfang/core": "0.1.0",
-    "@yuanfang/shared": "0.1.0"
+    "@yuanfang/shared": "0.1.0",
+    "electron-updater": "^6.6.2",
+    "quickjs-wasi": "3.6.2"
   },
   "devDependencies": {
     "@types/node": "24.10.1",
@@ -20,10 +26,55 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.1.1",
     "electron": "45.2.1",
+    "electron-builder": "26.18.0",
     "electron-vite": "6.0.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "typescript": "5.9.3",
     "vite": "7.3.1"
+  },
+  "build": {
+    "appId": "app.yuanfang.desktop",
+    "productName": "元芳",
+    "directories": {
+      "output": "dist",
+      "buildResources": "resources"
+    },
+    "files": [
+      "out/**/*",
+      "package.json",
+      "resources/**/*"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/quickjs-wasi/**",
+      "**/node_modules/@yuanfang/core/dist/plugin-host.js"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "resources/icon.png",
+      "identity": null
+    },
+    "dmg": {
+      "title": "元芳 ${version}"
+    },
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "resources"
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "maliang",
+        "repo": "yuanfang",
+        "releaseType": "release"
+      }
+    ]
   }
 }

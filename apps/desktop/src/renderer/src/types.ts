@@ -33,6 +33,7 @@ export interface YuanfangApi {
     role?: string;
     files?: string[];
     dependsOn?: string[];
+    stage?: string;
   }): Promise<TaskSummary>;
   dispatchTask(taskId: string): Promise<{ reporterId: string; roleConversationId: string }>;
   cancelTask(taskId: string): Promise<void>;
@@ -77,6 +78,17 @@ export interface YuanfangApi {
     env?: Record<string, string>;
   }): Promise<import("@yuanfang/shared").ProviderModelsResult>;
   removeProviderKey(providerId: string): Promise<import("@yuanfang/shared").ProviderModelsResult>;
+  importPiCredentials(): Promise<number>;
+  getRoles(): Promise<import("@yuanfang/shared").RoleDefinitionView[]>;
+  saveRole(input: {
+    name: string;
+    description: string;
+    instructions: string;
+    model: { provider: string; modelId: string } | null;
+  }): Promise<import("@yuanfang/shared").RoleDefinitionView[]>;
+  beginProviderLogin(providerId: string): Promise<{ loginId: string }>;
+  respondLoginPrompt(input: { loginId: string; promptId: string; value: string }): Promise<void>;
+  cancelProviderLogin(loginId: string): Promise<void>;
   updateConfig(input: UpdateConfigInput): Promise<RuntimeConfigView>;
   getSkills(input?: { projectId?: string | null }): Promise<SkillInfo[]>;
   saveSkill(input: {
@@ -101,6 +113,7 @@ export interface YuanfangApi {
     command: string;
     args: string[];
     url: string | null;
+    oauth: boolean;
     projects: string[];
     connected: boolean;
     tools: Array<{ name: string; description: string }>;
@@ -113,6 +126,7 @@ export interface YuanfangApi {
   quickAsk(text: string): Promise<{ conversationId: string; messageId: number }>;
   hideQuickAsk(): void;
   openMain(): void;
+  checkForUpdates(): Promise<void>;
   onEvent(callback: (event: RuntimeEvent) => void): () => void;
   onNavigate(callback: (target: NavigateInput) => void): () => void;
 }

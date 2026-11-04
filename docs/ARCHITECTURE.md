@@ -39,7 +39,7 @@
 | 每次对话新开但界面连贯 | 系统对话在每个用户回合结束后 `reset(handoff)`；handoff 由记忆 + 项目总览 + 最近消息生成；UI 消息表独立保留 |
 | 项目负责人/角色也尽量连续 | 项目负责人在非报告回合后同样 reset；角色任务一个 conversation 持续到任务结束 |
 | 自建/修改 skill | `skill_write` / `skill_list` / `read_skill`；全局与项目 `.yuanfang/skills` |
-| 自建/优化插件 | `plugin_write` / `plugin_reload`；`PluginService` 动态 import + registry.install |
+| 自建/优化插件 | `plugin_write` 保存 + 审批；`PluginService` 在 QuickJS WASM 子进程加载，注册代理 extension |
 | 安装软件 / MCP 需同意 | `request_approval` + `bash` guard + `mcp_add`；批准后执行/安装，拒绝后告知请求方 |
 | 系统 Agent 人格 | `~/.yuanfang/persona.md`，设置面板可编辑，prompt section 每次请求重读 |
 | 用户只和系统 Agent 沟通 | 项目负责人和角色 Agent 不暴露输入入口；项目页的「项目对话」只是只读/系统转发 |
@@ -224,16 +224,23 @@ UI 消息存在 `messages` 表，不随 reset 消失，所以界面是连贯的�
 - 位置：`~/.yuanfang/plugins/*.mjs`。
 - 模块导出 `name`、`description`、`activate(ctx)`。
 - `ctx.pi` 提供 `defineTool` / `defineExtension` / `section` / `wrapTool` / schema builders；
-- `ctx.install(extension)` 安装到实时 registry；
-- `ctx.app` 暴露 store/host/runtime；
-- `plugin_write` 写入后立即 import + install，`plugin_reload` 用 mtime 缓存破坏重新加载。
-- 插件是可信代码，没有沙箱。
+- `ctx.install(extension)` 注册到沙箱内的 extension 列表；
+- `ctx.app` 只暴露 notify、log、readProjectFile、writeProjectFile、listProjectFiles；权限由 sidecar `permissions` 控制，宿主 RPC 校验项目路径；
+- `plugin_write` 先写 `.mjs` + `.json` 并发起审批；批准后 `PluginService` 在 QuickJS WASM 子进程中加载；
+- 插件代码没有 Node 全局 / process / require / fs / net；ESM import 被 moduleLoader 拒绝；工具通过 RPC 代理进 registry。
 
 ### 9.3 角色定义
 
-`~/.yuanfang/roles.json` 保存角色名、描述和 instructions。内置架构师 / 前端 / 后端 / 测试 / 文档 / 执行。`role_list` 查看，`role_upsert` 新增或修改；派发任务时按角色名合并进角色 Agent 的 instructions。
+`~/.yuanfang/roles.json` 保存角色名、描述、instructions 和可选模型。内置产品经理 / UI 设计师 / 架构师 / 前端 / 后端 / 全栈 / 测试 / 代码审查 / 安全审计 / DevOps / 文档 / 执行。`role_list` 查看，`role_upsert` 新增或修改；设置页角色编辑器可改 instructions 并为角色指定不同模型；派发任务时按角色名合并进角色 Agent 的 instructions 和模型。
 
-### 9.4 MCP
+### 9.4 Workflow 与 worktree
+
+- 项目有 `workflow` 阶段列表，任务有 `stage`；`set_workflow` 修改，`advance_task` 推进并重新派发。`accept_task` 强制任务处于 workflow 最后一个阶段，否则拒绝；最终交付仍由 `review → done` 验收门控制。
+- 开启 `worktreePerTask` 且项目是干净 git 仓库时，dispatch 在 `~/.yuanfang/worktrees/<project>/<task>` 创建分支 `yuanfang/task-<id>`，角色 cwd 指向 worktree。
+- 验收通过时先提交 worktree 变更，再 `git merge --no-ff` 回主工作树；冲突会 abort merge、保留分支并返回错误。退回/取消/重试会清理 worktree 和分支。
+- 不满足 git 条件时自动回退主工作区，并使用任务级文件占用。
+
+### 9.5 MCP
 
 - `mcp.json` 保存 stdio 或 Streamable HTTP server 配置，可带 `projects` 白名单。
 - `McpService` 用 `@earendil-works/pi-mcp` 的 `StdioTransport` / `StreamableHttpTransport` + `McpClient`：
@@ -286,9 +293,12 @@ streaming 来自 `conversation.watch()` 的 `pi.live.generation.message`；commi
 
 ## 13. 凭据与通知
 
-- 凭据存储是 `LayeredFileCredentialStore`：远方自己的 `auth.json` 优先，其次只读 Pi 的 auth，最后 provider 的 env/ambient 解析。
+- 运行时内嵌 Pi Durable / pi-ai，不依赖外部 Pi 安装。
+- 凭据存储是 `LayeredFileCredentialStore`：远方自己的 `auth.json` 优先；如果本机有 Pi，只读其 auth 作为可选回退，并支持一键导入；最后才是 provider 的 env/ambient 解析。
 - 设置页左侧厂商、右侧配置；保存 API Key 后调用 `models.refresh({ providers: [id] })` 再读 `getModels(id)`，因此动态 provider 的模型列表在填入 Key 后出现。
+- OAuth 在同一详情里登录：`beginProviderLogin` 启动 `models.login`，prompt/notify 通过运行时事件与 UI 往返；`auth_url` 由主进程打开浏览器；完成后刷新厂商和模型。
 - 通知写入 `notifications` 表；`#notify` 先落库再按 `notifyLevel` 决定是否推送 Electron 通知。通知记录带 `messageId`，系统对话支持锚点跳转。
+- 每日 token 预算记录在 `usage_daily`；`syncConversationUsage` 把输入+输出增量写入，超预算后 `dispatchTask` 拒绝新任务并给出警告。
 
 ## 14. 数据、迁移与备份
 
@@ -318,21 +328,20 @@ streaming 来自 `conversation.watch()` 的 `pi.live.generation.message`；commi
 ## 17. 已知取舍
 
 - 系统 Agent 每轮 reset，牺牲原始长上下文换取成本与可控性；需要完整历史时查 UI 消息/记忆。
-- 角色任务完成即 `done`，验收由项目负责人负责；没有自动 diff 审查。
-- 文件占用只覆盖任务声明的 `files`；未声明文件的 `bash` 写入仍可能绕过。
-- 没有 per-task worktree / 自动 git 分支；并行任务的逻辑冲突仍可能发生。
+- 角色完成进入 `review`，必须由项目负责人/用户 `accept_task` 才 `done`。任务时间线有工具记录与 edit diff，但没有自动代码审查。
+- 文件占用只覆盖任务声明的 `files`；worktree 模式可以隔离，但要求干净的 git 仓库，冲突需要手动解决。
 - 记忆检索是关键词/FTS，不是语义检索；中文长句依赖 LIKE 兜底。
-- MCP 只支持 stdio；没有 OAuth/HTTP。
-- 插件无沙箱，只有“用户信任”这一层。
+- MCP 支持 stdio、Streamable HTTP 和 OAuth；OAuth 使用本机回调 server + 浏览器授权，需要真机验证。
+- 插件写入后需要审批，加载在 QuickJS WASM 子进程中；默认没有 fs/net/process，只有声明并通过宿主 RPC 的项目文件能力。
 - 没有多用户、权限和配额；当前是单机单用户。
-- 通知没有系统级通知中心；点击只能回到项目/对话，不能精确滚动到消息。
-- 没有登录 / 凭据设置 UI；首次使用需要先在 Pi 登录或配置环境变量。
+- 通知中心、OAuth 登录、厂商凭据 UI、自动更新提示都已接入；项目/角色通知只到任务详情，不逐条高亮。
+- 自动更新使用 electron-updater；未签名应用在正式分发时仍需要签名/公证。
 
 ## 18. 下一步
 
-1. 打包/签名/自动更新 + 通知图标。
-2. MCP HTTP/OAuth、按项目启用、工具权限清单。
-3. bash 写入的文件级检测（或提供受锁的 `write_file` 命令包装）。
-4. 任务 diff、自动验收、回滚。
-5. 记忆去重、遗忘、向量检索。
-6. 多项目并行压测与 token 预算。
+1. 代码签名 / 公证 + 正式更新服务。
+2. MCP OAuth 与更细的工具权限。
+3. bash 写入的 worktree/文件占用检测。
+4. worktree 冲突自动合并与一键回滚。
+5. 记忆过期、遗忘、向量检索。
+6. i18n 与多项目压测。

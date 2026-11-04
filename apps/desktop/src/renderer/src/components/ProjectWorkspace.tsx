@@ -153,6 +153,16 @@ export function ProjectWorkspace({
         <Stat label="成本" value={`$${detail.stats.cost.toFixed(2)}`} hint="按模型目录估算" />
       </div>
 
+      <div className="workflow-row">
+        <span className="muted small">流程</span>
+        {detail.workflow.map((stage, index) => (
+          <span key={`${stage}-${index}`} className="workflow-stage">
+            {stage}
+            {index < detail.workflow.length - 1 ? <em>→</em> : null}
+          </span>
+        ))}
+      </div>
+
       <div className="workspace-tabs">
         {(
           [
@@ -264,6 +274,7 @@ export function ProjectWorkspace({
       {showNewTask ? (
         <NewTaskModal
           projectId={detail.id}
+          workflow={detail.workflow}
           onClose={() => setShowNewTask(false)}
           onCreated={() => {
             setShowNewTask(false);
@@ -275,6 +286,7 @@ export function ProjectWorkspace({
       {selectedTask !== null ? (
         <TaskDetail
           task={selectedTask}
+          workflow={detail.workflow}
           feed={selectedTask.conversationId === null ? null : (feeds[selectedTask.conversationId] ?? null)}
           onClose={onCloseTask}
           onDispatch={onDispatch}
@@ -329,6 +341,7 @@ function TaskGroup({
               <div className="task-title-line">
                 <strong>{task.title}</strong>
                 <span className={`chip ${task.status}`}>{TASK_STATUS_LABEL[task.status]}</span>
+                <span className="chip muted">{task.stage}</span>
                 <span className="role-badge">{task.role}</span>
               </div>
               <p>{truncate(task.brief, 160)}</p>
@@ -399,6 +412,7 @@ function MemoryList({ memories }: { memories: MemoryEntry[] }) {
 
 function TaskDetail({
   task,
+  workflow,
   feed,
   onClose,
   onDispatch,
@@ -409,6 +423,7 @@ function TaskDetail({
   busy,
 }: {
   task: TaskSummary;
+  workflow: string[];
   feed: ConversationFeed | null;
   onClose: () => void;
   onDispatch: (taskId: string) => Promise<void>;
@@ -420,6 +435,8 @@ function TaskDetail({
 }) {
   const [note, setNote] = useState("");
   const [events, setEvents] = useState<TaskEvent[]>([]);
+  const finalStage = workflow.length > 0 ? workflow[workflow.length - 1] : null;
+  const canAccept = finalStage === null || task.stage === finalStage;
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
@@ -445,6 +462,7 @@ function TaskDetail({
             <div className="task-title-line">
               <h2>{task.title}</h2>
               <span className={`chip ${task.status}`}>{TASK_STATUS_LABEL[task.status]}</span>
+              <span className="chip muted">{task.stage}</span>
               <span className="role-badge">{task.role}</span>
             </div>
             <p>{task.brief}</p>
@@ -478,10 +496,16 @@ function TaskDetail({
           <span>创建 {formatDateTime(task.createdAt)}</span>
         </div>
         {task.files.length > 0 ? <div className="task-files">涉及文件：{task.files.join(", ")}</div> : null}
+        {task.worktreePath !== null ? (
+          <div className="task-files">独立工作区：{task.worktreePath}{task.worktreeBranch === null ? "" : ` · ${task.worktreeBranch}`}</div>
+        ) : null}
         {task.status === "review" ? (
           <div className="review-box">
             <div className="review-title">等待验收</div>
-            <p>核验产出后通过，或写清问题退回重做。</p>
+            <p>
+              核验产出后通过，或写清问题退回重做。
+              {canAccept ? "" : ` 当前阶段是「${task.stage}」，需先推进到「${finalStage}」才能通过验收。`}
+            </p>
             <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="验收备注 / 退回原因" />
             <div className="review-actions">
               <button
@@ -491,7 +515,7 @@ function TaskDetail({
               >
                 退回重做
               </button>
-              <button className="primary-button" disabled={busy} onClick={() => void onAccept(task.id, note.trim() || undefined)}>
+              <button className="primary-button" disabled={busy || !canAccept} onClick={() => void onAccept(task.id, note.trim() || undefined)}>
                 通过验收
               </button>
             </div>

@@ -54,6 +54,19 @@ import { ProjectIndexer } from "./indexer.js";
 import { SkillService } from "./skills.js";
 import { PluginService } from "./plugins.js";
 import { McpService } from "./mcp.js";
+import {
+  commitAll,
+  commitTaskWorktree,
+  conflictMarkerPaths,
+  createTaskWorktree,
+  currentHead,
+  gitCommitInitial,
+  mergeInsideWorktree,
+  mergeIntoProject,
+  removeTaskWorktree,
+  unmergedPaths,
+  type TaskWorktree,
+} from "./worktree.js";
 import { RoleService } from "./roles.js";
 import {
   emptyStats,
@@ -145,6 +158,19 @@ export class YuanfangRuntime implements RuntimeHost {
   #closed = false;
   #taskClaims = new Map<string, () => void>();
   #indexTimers = new Map<string, NodeJS.Timeout>();
+  #budgetWarnedDay: string | null = null;
+  #mergeQueue: Promise<void> = Promise.resolve();
+  #logins = new Map<
+    string,
+    {
+      providerId: string;
+      controller: AbortController;
+      prompts: Map<
+        string,
+        { resolve: (value: string) => void; reject: (error: unknown) => void }
+      >;
+    }
+  >();
 
   private constructor() {
     this.#status = {
@@ -211,17 +237,48 @@ export class YuanfangRuntime implements RuntimeHost {
       }),
     );
 
-    this.plugins = new PluginService(
-      paths.pluginsDir,
-      () => this.registry,
-      () => ({ store: this.store, host: this, runtime: this }),
-      (message) => this.log("info", message),
-    );
+    this.plugins = new PluginService({
+      directory: paths.pluginsDir,
+      workspace: paths.workspace,
+      projectsDir: paths.projectsDir,
+      projectRootForConversation: (conversationId) => {
+        const scope = this.scopeFor(conversationId);
+        return scope.task?.worktreePath ?? scope.project?.path ?? null;
+      },
+      projectRoots: () => {
+        const roots = this.store.listProjectRecords(true).map((project) => project.path);
+        for (const project of this.store.listProjectRecords(true)) {
+          for (const task of this.store.listTaskRecords(project.id)) {
+            if (task.worktreePath !== null) roots.push(task.worktreePath);
+          }
+        }
+        for (const watched of this.#watched.values()) {
+          if (watched.state.projectId !== null) {
+            const project = this.store.getProjectRecord(watched.state.projectId);
+            if (project !== undefined) roots.push(project.path);
+          }
+        }
+        return roots;
+      },
+      notify: (title, body) =>
+        this.#notify({
+          type: "notification",
+          title,
+          body,
+          projectId: null,
+          taskId: null,
+          conversationId: null,
+          urgent: false,
+        }),
+      registry: () => this.registry,
+      log: (level, message) => this.log(level, message),
+    });
     this.mcp = new McpService(
       paths.mcpFile,
       () => this.registry,
       (level, message) => this.log(level, message),
       (conversationId) => this.store.getProjectByConversation(conversationId)?.id ?? null,
+      (url) => this.#emit({ type: "external_url", url }),
     );
     this.roles = new RoleService(paths.rolesFile);
 
@@ -371,6 +428,7 @@ export class YuanfangRuntime implements RuntimeHost {
     this.#taskClaims.clear();
     for (const timer of this.#indexTimers.values()) clearTimeout(timer);
     this.#indexTimers.clear();
+    await this.plugins.close().catch(() => undefined);
     await this.mcp.close().catch(() => undefined);
     await this.harness.close(SYSTEM_CONTEXT).catch(() => undefined);
     this.store.close();
@@ -385,7 +443,7 @@ export class YuanfangRuntime implements RuntimeHost {
       .checkAuth(this.config.provider)
       .then((check) => {
         if (check !== undefined) return;
-        const warning = `模型 ${this.config.provider}/${this.config.model} 没有可用凭据。请先在 Pi 登录，或在环境中配置对应 API Key。`;
+        const warning = `模型 ${this.config.provider}/${this.config.model} 没有可用凭据。请在设置 → 厂商与凭据里填写 API Key 或完成 OAuth。`;
         this.#status = { ...this.#status, warning };
         this.log("warn", warning);
         this.#emit({ type: "status", status: this.status() });
@@ -482,6 +540,114 @@ export class YuanfangRuntime implements RuntimeHost {
     return this.providerModels(providerId, true);
   }
 
+  beginProviderLogin(providerId: string): { loginId: string } {
+    const provider = this.models.getProvider(providerId);
+    if (provider === undefined) throw new Error(`provider ${providerId} not found`);
+    if (provider.auth.oauth === undefined) throw new Error("该厂商不支持 OAuth 登录");
+    const loginId = uid("login");
+    const controller = new AbortController();
+    const login = { providerId, controller, prompts: new Map() };
+    this.#logins.set(loginId, login);
+    setImmediate(() => {
+      void (async () => {
+      try {
+        await this.models.login(
+          providerId,
+          "oauth",
+          {
+            signal: controller.signal,
+            notify: (event) => {
+              this.#emit({ type: "login_event", loginId, providerId, event: event as import("@yuanfang/shared").LoginEventView });
+            },
+            prompt: (prompt) =>
+              new Promise<string>((resolve, reject) => {
+                if (controller.signal.aborted) {
+                  reject(controller.signal.reason ?? new Error("cancelled"));
+                  return;
+                }
+                const promptId = uid("auth");
+                login.prompts.set(promptId, { resolve, reject });
+                const abort = () => {
+                  if (!login.prompts.delete(promptId)) return;
+                  reject(controller.signal.reason ?? new Error("cancelled"));
+                };
+                controller.signal.addEventListener("abort", abort, { once: true });
+                this.#emit({
+                  type: "login_prompt",
+                  loginId,
+                  providerId,
+                  prompt: {
+                    id: promptId,
+                    type: prompt.type,
+                    message: prompt.message,
+                    ...("placeholder" in prompt && prompt.placeholder !== undefined
+                      ? { placeholder: prompt.placeholder }
+                      : {}),
+                    ...(prompt.type === "select"
+                      ? { options: prompt.options.map((option) => ({ ...option })) }
+                      : {}),
+                  },
+                });
+              }),
+          },
+          { agentName: this.config.agentName },
+        );
+        this.#emit({ type: "login_done", loginId, providerId, ok: true });
+      } catch (error) {
+        this.#emit({
+          type: "login_done",
+          loginId,
+          providerId,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        for (const prompt of login.prompts.values()) prompt.reject(new Error("login ended"));
+        this.#logins.delete(loginId);
+      }
+      })();
+    });
+    return { loginId };
+  }
+
+  respondLoginPrompt(loginId: string, promptId: string, value: string): void {
+    const login = this.#logins.get(loginId);
+    const prompt = login?.prompts.get(promptId);
+    if (login === undefined || prompt === undefined) throw new Error("登录会话或输入项已过期");
+    login.prompts.delete(promptId);
+    prompt.resolve(value);
+  }
+
+  cancelProviderLogin(loginId: string): void {
+    const login = this.#logins.get(loginId);
+    if (login === undefined) return;
+    login.controller.abort(new Error("登录已取消"));
+    this.#logins.delete(loginId);
+  }
+
+  async listRoles(): Promise<import("@yuanfang/shared").RoleDefinitionView[]> {
+    return this.roles.list();
+  }
+
+  async saveRole(input: {
+    name: string;
+    description: string;
+    instructions: string;
+    model: { provider: string; modelId: string } | null;
+  }): Promise<import("@yuanfang/shared").RoleDefinitionView[]> {
+    await this.roles.upsert(input.name, input.description, input.instructions, input.model);
+    return this.roles.list();
+  }
+
+  async importPiCredentials(): Promise<number> {
+    const imported = await this.credentials.importPiCredentials();
+    if (imported > 0) {
+      this.#checkModelAuth();
+      this.#emit({ type: "status", status: this.status() });
+    }
+    return imported;
+  }
+
   async removeProviderKey(providerId: string): Promise<import("@yuanfang/shared").ProviderModelsResult> {
     const origin = await this.credentials.origin(providerId);
     if (origin === "pi") throw new Error("这是 Pi 的凭据，请在 Pi 中退出，或直接保存一个新的 Key 覆盖");
@@ -509,6 +675,9 @@ export class YuanfangRuntime implements RuntimeHost {
       maxTurns: this.config.maxTurns,
       maxConcurrentTasks: this.config.maxConcurrentTasks,
       notifyLevel: this.config.notifyLevel,
+      worktreePerTask: this.config.worktreePerTask,
+      dailyTokenBudget: this.config.dailyTokenBudget,
+      updateFeedUrl: this.config.updateFeedUrl,
       persona,
       personaPath: this.paths.personaFile,
       defaultProjectDir: this.paths.projectsDir,
@@ -548,6 +717,11 @@ export class YuanfangRuntime implements RuntimeHost {
         ? {}
         : { maxConcurrentTasks: Math.max(1, Math.min(32, Math.floor(input.maxConcurrentTasks))) }),
       ...(input.notifyLevel === undefined ? {} : { notifyLevel: input.notifyLevel }),
+      ...(input.worktreePerTask === undefined ? {} : { worktreePerTask: input.worktreePerTask }),
+      ...(input.dailyTokenBudget === undefined || !Number.isFinite(input.dailyTokenBudget)
+        ? {}
+        : { dailyTokenBudget: Math.max(0, Math.floor(input.dailyTokenBudget)) }),
+      ...(input.updateFeedUrl === undefined ? {} : { updateFeedUrl: input.updateFeedUrl.trim() }),
     };
     this.config = next;
     await saveConfig(this.paths, next);
@@ -579,6 +753,7 @@ export class YuanfangRuntime implements RuntimeHost {
     }
     this.store.setKv("system_model", `${next.provider}/${next.model}`);
     this.#checkModelAuth();
+    this.#checkBudget();
     for (const project of this.store.listProjectRecords()) {
       this.store.setKv(`project_model:${project.id}`, `${next.projectProvider}/${next.projectModel}`);
     }
@@ -1187,6 +1362,7 @@ export class YuanfangRuntime implements RuntimeHost {
       // README already exists.
     }
     await execFileAsync("git", ["init"], { cwd: directory }).catch(() => undefined);
+    if (input.path === undefined) await gitCommitInitial(directory);
     const project = this.store.createProject({
       id: projectId,
       name: input.name,
@@ -1267,6 +1443,7 @@ export class YuanfangRuntime implements RuntimeHost {
       role: input.role ?? "执行",
       dependsOn: input.dependsOn ?? [],
       files: input.files ?? [],
+      stage: input.stage,
       model: `${this.config.roleProvider}/${this.config.roleModel}`,
     });
     this.#emit({ type: "task_updated", task: this.store.taskSummary(task) });
@@ -1286,6 +1463,9 @@ export class YuanfangRuntime implements RuntimeHost {
     if (project.status !== "active") {
       throw new Error(`项目「${project.name}」当前为 ${project.status}，不能派发任务`);
     }
+    if (this.#budgetExceeded()) {
+      throw new Error(`今日 token 预算 ${this.config.dailyTokenBudget} 已用完，请在设置里调整预算`);
+    }
     const activeCount = this.store
       .listActiveTaskRecords()
       .filter((each) => each.projectId === task.projectId && ["queued", "running", "waiting"].includes(each.status)).length;
@@ -1302,6 +1482,7 @@ export class YuanfangRuntime implements RuntimeHost {
       this.skills.list(project.id, project.path),
     ]);
     const roleDefinition = await this.roles.get(task.role);
+    const roleModel = roleDefinition.model ?? { provider: this.config.roleProvider, modelId: this.config.roleModel };
     const instructions = roleInstructions({
       project,
       task,
@@ -1313,6 +1494,19 @@ export class YuanfangRuntime implements RuntimeHost {
 
     if (!this.store.claimTaskForDispatch(task.id)) {
       throw new Error(`task ${task.title} was already dispatched`);
+    }
+
+    let worktree: TaskWorktree | undefined;
+    if (this.config.worktreePerTask) {
+      worktree = await createTaskWorktree({
+        projectPath: project.path,
+        workspace: this.paths.workspace,
+        projectId: project.id,
+        taskId: task.id,
+      });
+      if (worktree === undefined) {
+        this.reportTaskProgress(task.id, "git 工作区不干净或不是 git 仓库，已回退到主工作区");
+      }
     }
 
     let result: { roleConversationId: string; reporterId: string };
@@ -1327,9 +1521,9 @@ export class YuanfangRuntime implements RuntimeHost {
           ownership: { kind: "task", taskId: anchor },
         });
         await configure(tx, roleConversation.id, {
-          model: { provider: this.config.roleProvider, modelId: this.config.roleModel },
+          model: roleModel,
           thinkingLevel: this.config.roleThinkingLevel,
-          cwd: project.path,
+          cwd: worktree?.path ?? project.path,
           maxTurns: this.config.maxTurns,
           extensions: { remove: [this.#extensions.system, this.#extensions.project] },
           instructions,
@@ -1342,6 +1536,7 @@ export class YuanfangRuntime implements RuntimeHost {
           title: task.title,
           role: task.role,
           brief: task.brief,
+          ...(worktree === undefined ? {} : { worktreePath: worktree.path }),
         };
         const reporter = await tx.createTask(this.#taskDefs.RoleRun, reporterInput, {
           ownership: { kind: "conversation" },
@@ -1354,6 +1549,7 @@ export class YuanfangRuntime implements RuntimeHost {
         return { roleConversationId: String(roleConversation.id), reporterId: String(reporter) };
       }, SYSTEM_CONTEXT);
     } catch (error) {
+      if (worktree !== undefined) await removeTaskWorktree(project.path, worktree).catch(() => undefined);
       this.store.updateTask(task.id, { status: "todo" });
       throw error;
     }
@@ -1361,7 +1557,9 @@ export class YuanfangRuntime implements RuntimeHost {
     this.store.updateTask(task.id, {
       conversationId: result.roleConversationId,
       durableTaskId: result.reporterId,
-      model: `${this.config.roleProvider}/${this.config.roleModel}`,
+      model: `${roleModel.provider}/${roleModel.modelId}`,
+      worktreePath: worktree?.path ?? null,
+      worktreeBranch: worktree?.branch ?? null,
     });
     const roleConversation = await this.harness.conversation(cid(result.roleConversationId), SYSTEM_CONTEXT);
     if (roleConversation !== undefined) {
@@ -1377,6 +1575,10 @@ export class YuanfangRuntime implements RuntimeHost {
     if (task === undefined) return;
     if (!["todo", "queued", "running", "waiting", "review"].includes(task.status)) return;
     this.releaseTaskClaims(task.id);
+    const cancelProject = this.store.getProjectRecord(task.projectId);
+    if (cancelProject !== undefined && task.worktreePath !== null && task.worktreeBranch !== null) {
+      await removeTaskWorktree(cancelProject.path, { path: task.worktreePath, branch: task.worktreeBranch });
+    }
     if (task.durableTaskId !== null) {
       await this.harness.abortTask(task.durableTaskId as never, SYSTEM_CONTEXT).catch(() => undefined);
     }
@@ -1388,14 +1590,150 @@ export class YuanfangRuntime implements RuntimeHost {
       status: "cancelled",
       finishedAt: Date.now(),
       error: "cancelled by user",
+      worktreePath: null,
+      worktreeBranch: null,
     });
     this.#emit({ type: "task_updated", task: this.store.taskSummary(this.store.getTaskRecord(task.id)!) });
   }
 
-  acceptTask(taskId: string, note?: string): void {
+  #withMergeLock<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.#mergeQueue.then(run, run);
+    this.#mergeQueue = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  async #mergeTaskWorktree(project: ProjectRecord, task: TaskRecord): Promise<void> {
+    if (task.worktreePath === null || task.worktreeBranch === null) return;
+    const worktree: TaskWorktree = { path: task.worktreePath, branch: task.worktreeBranch };
+    // A previous crash may have left an unfinished merge in the worktree.
+    await this.#abortWorktreeMerge(worktree);
+    await commitTaskWorktree(worktree, `yuanfang: ${task.title}`);
+    const direct = await mergeIntoProject(project.path, worktree.branch, `yuanfang: accept ${task.title}`);
+    if (direct.ok) {
+      await removeTaskWorktree(project.path, worktree);
+      this.store.updateTask(task.id, { worktreePath: null, worktreeBranch: null });
+      this.scheduleProjectIndex(task.projectId);
+      return;
+    }
+    if (direct.conflicts.length === 0) {
+      throw new Error("合并失败：主工作区可能有未提交修改，或 git 拒绝合并");
+    }
+
+    const base = await currentHead(project.path);
+    const merged = await mergeInsideWorktree(worktree, base);
+    if (!merged.ok) {
+      if (merged.conflicts.length === 0) {
+        await this.#abortWorktreeMerge(worktree);
+        throw new Error("自动合并失败：无法进入冲突解决状态");
+      }
+      try {
+        await this.#resolveWorktreeConflicts(project, task, worktree, merged.conflicts);
+      } catch (error) {
+        await this.#abortWorktreeMerge(worktree);
+        throw error;
+      }
+    }
+    const final = await mergeIntoProject(project.path, worktree.branch, `yuanfang: accept ${task.title}`);
+    if (!final.ok) {
+      throw new Error(
+        `冲突已解决，但主工作树在合并期间又发生变化。请重试验收。冲突文件：${final.conflicts.join(", ")}`,
+      );
+    }
+    await removeTaskWorktree(project.path, worktree);
+    this.store.updateTask(task.id, { worktreePath: null, worktreeBranch: null });
+    this.scheduleProjectIndex(task.projectId);
+  }
+
+  async #abortWorktreeMerge(worktree: TaskWorktree): Promise<void> {
+    try {
+      await execFileAsync("git", ["-C", worktree.path, "merge", "--abort"]);
+    } catch {
+      // No merge in progress.
+    }
+  }
+
+  async #resolveWorktreeConflicts(
+    project: ProjectRecord,
+    task: TaskRecord,
+    worktree: TaskWorktree,
+    conflicts: string[],
+  ): Promise<void> {
+    const role = await this.roles.get("代码审查");
+    const model = role.model ?? { provider: this.config.roleProvider, modelId: this.config.roleModel };
+    const conversation = await this.harness.createConversation(
+      { ownership: { kind: "ownerless" } },
+      SYSTEM_CONTEXT,
+    );
+    await conversation.configure(
+      {
+        model,
+        thinkingLevel: this.config.roleThinkingLevel,
+        cwd: worktree.path,
+        maxTurns: Math.max(20, this.config.maxTurns),
+        instructions: [
+          "你负责解决 git merge 冲突。",
+          "冲突来自其他已验收任务推进了主分支，而当前任务分支需要合并主分支。",
+          "保留双方意图，不要为了让冲突消失而删除别人的功能。",
+          "解决冲突标记后，运行相关测试或至少做语法/类型检查。",
+          "最后用 git add -A 并 commit 完成 merge；不要留下未解决冲突。",
+        ].join("\n"),
+        extensions: { remove: [this.#extensions.system, this.#extensions.project] },
+      },
+      SYSTEM_CONTEXT,
+    );
+    const prompt = [
+      `请解决项目「${project.name}」的合并冲突。`,
+      `项目主工作树：${project.path}`,
+      `任务工作树：${worktree.path}`,
+      `冲突文件：${conflicts.join(", ")}`,
+      "",
+      "目标：把主分支合并进当前任务分支，解决所有冲突，然后提交 merge commit。",
+      "完成后报告：冲突文件、解决策略、验证结果。",
+    ].join("\n");
+    const submission = await conversation.submit(
+      {
+        type: "input",
+        content: prompt,
+        requestId: `merge-resolve:${task.id}:${worktree.branch}`,
+        entry: { kind: "yf.merge_conflict", data: { taskId: task.id, conflicts } },
+      },
+      SYSTEM_CONTEXT,
+    );
+    const settled = await submission.wait(SYSTEM_CONTEXT);
+    if (settled.status !== "done") {
+      throw new Error(`冲突解决 Agent 未完成：${settled.reason}`);
+    }
+    await commitAll(worktree, `yuanfang: resolve conflicts for ${task.title}`);
+    const remaining = await unmergedPaths(worktree);
+    if (remaining.length > 0) {
+      throw new Error(`冲突仍未解决：${remaining.join(", ")}`);
+    }
+    const marked = await conflictMarkerPaths(worktree, conflicts);
+    if (marked.length > 0) {
+      throw new Error(`冲突文件仍包含冲突标记：${marked.join(", ")}`);
+    }
+  }
+
+  async acceptTask(taskId: string, note?: string): Promise<void> {
     const task = this.store.getTaskRecord(taskId);
     if (task === undefined) throw new Error(`task ${taskId} not found`);
     if (task.status !== "review") throw new Error(`任务「${task.title}」当前为 ${task.status}，不是待验收状态`);
+    const project = this.store.getProjectRecord(task.projectId);
+    if (project !== undefined && project.workflow.length > 0) {
+      const finalStage = project.workflow[project.workflow.length - 1];
+      if (task.stage !== finalStage) {
+        throw new Error(`任务在阶段「${task.stage}」，必须先推进到「${finalStage}」才能验收`);
+      }
+    }
+    if (project !== undefined && task.worktreePath !== null && task.worktreeBranch !== null) {
+      await this.#withMergeLock(async () => {
+        const current = this.store.getTaskRecord(task.id);
+        if (current === undefined || current.status !== "review") {
+          throw new Error(`任务「${task.title}」已不在待验收状态`);
+        }
+        await this.#mergeTaskWorktree(project, task);
+      });
+    }
     this.store.updateTask(task.id, { status: "done", error: null });
     this.store.addMemory({
       scope: task.projectId,
@@ -1417,10 +1755,53 @@ export class YuanfangRuntime implements RuntimeHost {
     });
   }
 
-  rejectTask(taskId: string, note: string): void {
+  async advanceTask(taskId: string): Promise<void> {
+    const task = this.store.getTaskRecord(taskId);
+    if (task === undefined) throw new Error(`task ${taskId} not found`);
+    const project = this.store.getProjectRecord(task.projectId);
+    if (project === undefined) throw new Error(`project ${task.projectId} not found`);
+    if (!["todo", "review", "failed", "cancelled"].includes(task.status)) {
+      throw new Error(`任务「${task.title}」正在 ${task.status}，不能推进阶段`);
+    }
+    const index = project.workflow.indexOf(task.stage);
+    const next = index >= 0 ? project.workflow[index + 1] : undefined;
+    if (next === undefined) throw new Error(`任务「${task.title}」已经是最后一个阶段（${task.stage}）`);
+    if (task.worktreePath !== null && task.worktreeBranch !== null) {
+      await removeTaskWorktree(project.path, { path: task.worktreePath, branch: task.worktreeBranch });
+    }
+    this.store.updateTask(task.id, {
+      stage: next,
+      status: "todo",
+      error: null,
+      result: null,
+      finishedAt: null,
+      durationMs: 0,
+      conversationId: null,
+      durableTaskId: null,
+      worktreePath: null,
+      worktreeBranch: null,
+    });
+    const updated = this.store.getTaskRecord(task.id)!;
+    this.#emit({ type: "task_updated", task: this.store.taskSummary(updated) });
+  }
+
+  setWorkflow(projectId: string, stages: string[]): void {
+    const project = this.store.getProjectRecord(projectId);
+    if (project === undefined) throw new Error(`project ${projectId} not found`);
+    const clean = stages.map((stage) => stage.trim()).filter((stage) => stage.length > 0);
+    if (clean.length === 0) throw new Error("工作流至少需要一个阶段");
+    this.store.setProjectWorkflow(projectId, clean);
+    this.#emit({ type: "project_updated", project: this.store.projectSummary(this.store.getProjectRecord(projectId)!) });
+  }
+
+  async rejectTask(taskId: string, note: string): Promise<void> {
     const task = this.store.getTaskRecord(taskId);
     if (task === undefined) throw new Error(`task ${taskId} not found`);
     if (task.status !== "review") throw new Error(`任务「${task.title}」当前为 ${task.status}，不是待验收状态`);
+    const project = this.store.getProjectRecord(task.projectId);
+    if (project !== undefined && task.worktreePath !== null && task.worktreeBranch !== null) {
+      await removeTaskWorktree(project.path, { path: task.worktreePath, branch: task.worktreeBranch });
+    }
     const reason = note.trim().length > 0 ? note.trim() : "验收未通过";
     this.store.updateTask(task.id, {
       status: "todo",
@@ -1451,7 +1832,13 @@ export class YuanfangRuntime implements RuntimeHost {
     if (task.status !== "failed" && task.status !== "cancelled") {
       throw new Error(`任务「${task.title}」当前为 ${task.status}，只有失败或取消的任务可以重试`);
     }
+    const retryProject = this.store.getProjectRecord(task.projectId);
+    if (retryProject !== undefined && task.worktreePath !== null && task.worktreeBranch !== null) {
+      await removeTaskWorktree(retryProject.path, { path: task.worktreePath, branch: task.worktreeBranch });
+    }
     this.store.updateTask(task.id, {
+      worktreePath: null,
+      worktreeBranch: null,
       status: "todo",
       error: null,
       result: null,
@@ -1531,6 +1918,27 @@ export class YuanfangRuntime implements RuntimeHost {
     const approval = this.store.resolveApproval(approvalId, status, note);
     if (approval === undefined) return this.store.getApproval(approvalId);
     let installFailure: string | null = null;
+    if (approval.kind === "plugin" && status === "approved") {
+      const name = typeof approval.payload.name === "string" ? approval.payload.name : "";
+      if (name.length > 0) {
+        try {
+          await this.plugins.reload(name);
+        } catch (error) {
+          installFailure = error instanceof Error ? error.message : String(error);
+          this.log("error", `插件 ${name} 加载失败：${installFailure}`);
+          this.#notify({
+            type: "notification",
+            title: `插件 ${name} 加载失败`,
+            body: installFailure,
+            projectId: approval.projectId,
+            taskId: null,
+            conversationId: approval.conversationId,
+            urgent: true,
+            important: true,
+          });
+        }
+      }
+    }
     if (approval.kind === "mcp" && status === "approved") {
       const payload = approval.payload as {
         serverName?: unknown;
@@ -1541,6 +1949,7 @@ export class YuanfangRuntime implements RuntimeHost {
         env?: unknown;
         cwd?: unknown;
         projects?: unknown;
+        oauth?: unknown;
       };
       if (
         typeof payload.serverName === "string" &&
@@ -1558,6 +1967,9 @@ export class YuanfangRuntime implements RuntimeHost {
               ? { env: payload.env as Record<string, string> }
               : {}),
             ...(typeof payload.cwd === "string" ? { cwd: payload.cwd } : {}),
+            ...(payload.oauth !== null && typeof payload.oauth === "object" && !Array.isArray(payload.oauth)
+              ? { oauth: payload.oauth as { clientId?: string; clientSecret?: string; scope?: string; authorizationServerMetadataUrl?: string } }
+              : {}),
             ...(Array.isArray(payload.projects) ? { projects: payload.projects.filter((item): item is string => typeof item === "string") } : {}),
           });
         } catch (error) {
@@ -1636,10 +2048,15 @@ export class YuanfangRuntime implements RuntimeHost {
     if (record !== undefined) this.#emit({ type: "project_updated", project: this.store.projectSummary(record) });
   }
 
-  deleteProject(projectId: string): boolean {
+  async deleteProject(projectId: string): Promise<boolean> {
     const project = this.store.getProjectRecord(projectId);
     if (project === undefined) return false;
     if (project.status !== "archived") throw new Error("只能删除已归档项目");
+    for (const task of this.store.listTaskRecords(projectId)) {
+      if (task.worktreePath !== null && task.worktreeBranch !== null) {
+        await removeTaskWorktree(project.path, { path: task.worktreePath, branch: task.worktreeBranch });
+      }
+    }
     const deleted = this.store.deleteProject(projectId);
     if (deleted) {
       this.store.appendEvent("project_deleted", { projectId });
@@ -1808,6 +2225,10 @@ export class YuanfangRuntime implements RuntimeHost {
     await this.plugins.loadAll();
   }
 
+  async savePlugin(name: string, code: string, permissions?: string[]): Promise<import("@yuanfang/shared").PluginInfo> {
+    return this.plugins.save(name, code, permissions);
+  }
+
   async removePlugin(name: string): Promise<boolean> {
     return this.plugins.remove(name);
   }
@@ -1834,9 +2255,45 @@ export class YuanfangRuntime implements RuntimeHost {
       const updated = this.store.getTaskRecord(task.id);
       if (updated !== undefined) this.#emit({ type: "task_updated", task: this.store.taskSummary(updated) });
     }
+    this.#checkBudget();
     if (projectId !== null) {
       const project = this.store.getProjectRecord(projectId);
       if (project !== undefined) this.#emit({ type: "project_updated", project: this.store.projectSummary(project) });
+    }
+  }
+
+  #budgetExceeded(): boolean {
+    if (this.config.dailyTokenBudget <= 0) return false;
+    return this.store.getDailyUsage().tokens >= this.config.dailyTokenBudget;
+  }
+
+  #checkBudget(): void {
+    if (this.config.dailyTokenBudget <= 0) {
+      if (this.#status.warning?.includes("token 预算") === true) {
+        this.#status = { ...this.#status, warning: null };
+        this.#emit({ type: "status", status: this.status() });
+      }
+      return;
+    }
+    const usage = this.store.getDailyUsage();
+    if (usage.tokens < this.config.dailyTokenBudget) return;
+    this.#status = {
+      ...this.#status,
+      warning: `今日 token 预算 ${this.config.dailyTokenBudget} 已用完（已用 ${usage.tokens}）。新任务会被拒绝，可在设置里调整。`,
+    };
+    this.#emit({ type: "status", status: this.status() });
+    if (this.#budgetWarnedDay !== usage.day) {
+      this.#budgetWarnedDay = usage.day;
+      this.#notify({
+        type: "notification",
+        title: "今日 token 预算已用完",
+        body: `已用 ${usage.tokens} / ${this.config.dailyTokenBudget}，新任务会被拒绝。`,
+        projectId: null,
+        taskId: null,
+        conversationId: null,
+        urgent: false,
+        important: true,
+      });
     }
   }
 

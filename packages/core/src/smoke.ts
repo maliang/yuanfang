@@ -68,7 +68,8 @@ try {
   const dispatched = await runtime.dispatchTask(task.id);
   await waitFor("task review", () => runtime.store.getTaskRecord(task.id)?.status === "review");
   console.log("✓ role task ready for review", dispatched.roleConversationId);
-  runtime.acceptTask(task.id, "smoke 验收通过");
+  runtime.setWorkflow(project.id, ["implement"]);
+  await runtime.acceptTask(task.id, "smoke 验收通过");
 
   const finished = runtime.store.getTaskRecord(task.id);
   if (finished === undefined || finished.status !== "done") throw new Error("task did not finish");

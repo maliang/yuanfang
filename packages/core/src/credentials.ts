@@ -50,6 +50,19 @@ export class LayeredFileCredentialStore implements CredentialStore {
     return fallback[providerId] === undefined ? "none" : "pi";
   }
 
+  async importPiCredentials(): Promise<number> {
+    const own = await readCredentialFile(this.#ownFile);
+    const fallback = await readCredentialFile(this.#fallbackFile);
+    let imported = 0;
+    for (const [providerId, credential] of Object.entries(fallback)) {
+      if (own[providerId] !== undefined) continue;
+      own[providerId] = credential;
+      imported += 1;
+    }
+    if (imported > 0) await writeCredentialFile(this.#ownFile, own);
+    return imported;
+  }
+
   async list(_options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
     const merged = { ...(await readCredentialFile(this.#fallbackFile)), ...(await readCredentialFile(this.#ownFile)) };
     return Object.entries(merged).map(([providerId, credential]) => ({ providerId, type: credential.type }));

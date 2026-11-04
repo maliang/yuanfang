@@ -561,17 +561,26 @@ function buildSystemTools(host: RuntimeHost): ToolRegistration[] {
   const pluginWrite = defineTool({
     name: "plugin_write",
     description:
-      "Create or replace a plugin (.mjs) and hot-load it into the running registry. This is trusted in-process code: keep it small, no secrets, and verify it loads.",
+      "Create or replace a plugin (.mjs). It is saved immediately but only loaded after the user approves it; plugins are trusted in-process code.",
     parameters: obj({
       name: str(),
       code: str({ description: "ES module exporting name, description and activate(ctx)." }),
+      permissions: opt(str({ description: "Comma-separated: projects:read, projects:write, env:NAME" })),
     }),
-    execute: async (args) => {
-      const result = await host.plugins.write(args.name, args.code);
-      return out(
-        `插件 ${result.name} ${result.loaded ? "已加载" : "加载失败"}${result.error === null ? "" : `：${result.error}`}\n路径：${result.path}`,
-        { plugin: result.name, loaded: result.loaded },
-      );
+    execute: async (args, api) => {
+      const permissions = splitList(args.permissions);
+      const saved = await host.savePlugin(args.name, args.code, permissions);
+      const scope = host.scopeFor(conversationIdOf(api));
+      const approval = host.createApproval({
+        kind: "plugin",
+        title: `加载插件：${saved.name}`,
+        detail: `插件代码已写入 ${saved.path}。沙箱权限：${permissions.join(", ") || "无（不能读文件/网络）"}。批准后在 QuickJS 沙箱中加载。`,
+        payload: { name: saved.name, path: saved.path, permissions },
+        projectId: scope.project?.id ?? null,
+        conversationId: scope.conversationId,
+        requestedBy: scope.kind,
+      });
+      return out(`插件已保存，等待审批后加载（id=${approval.id}）：${saved.path}`);
     },
   });
 
@@ -631,17 +640,26 @@ function buildSystemTools(host: RuntimeHost): ToolRegistration[] {
       name: str(),
       description: str(),
       instructions: str({ description: "Role-specific behavior, constraints and quality bar" }),
+      modelProvider: opt(str({ description: "Optional provider id for this role's model" })),
+      modelId: opt(str({ description: "Optional model id for this role" })),
     }),
     execute: async (args) => {
-      const role = await host.roles.upsert(args.name, args.description, args.instructions);
-      return out(`角色已保存：${role.name} — ${role.description}`);
+      const role = await host.roles.upsert(
+        args.name,
+        args.description,
+        args.instructions,
+        args.modelProvider !== undefined && args.modelId !== undefined
+          ? { provider: args.modelProvider, modelId: args.modelId }
+          : undefined,
+      );
+      return out(`角色已保存：${role.name}${role.model === null ? "" : ` · ${role.model.provider}/${role.model.modelId}`}`);
     },
   });
 
   const mcpAdd = defineTool({
     name: "mcp_add",
     description:
-      "Ask the user to approve connecting an MCP server over stdio. After approval the server's tools are installed into the live registry (mcp_<server>_<tool>).",
+      "Ask the user to approve connecting an MCP server over stdio or Streamable HTTP (optionally with MCP OAuth). After approval the server's tools are installed into the live registry (mcp_<server>_<tool>).",
     parameters: obj({
       name: str({ description: "Short server name, used in tool names" }),
       command: opt(str({ description: "Executable for a stdio server, e.g. npx or node" })),
@@ -650,6 +668,11 @@ function buildSystemTools(host: RuntimeHost): ToolRegistration[] {
       cwd: opt(str()),
       url: opt(str({ description: "Streamable HTTP MCP endpoint; omit command" })),
       headers: opt(str({ description: "JSON object of HTTP headers" })),
+      oauth: opt(bool({ description: "Use MCP OAuth for a Streamable HTTP server" })),
+      oauthClientId: opt(str()),
+      oauthClientSecret: opt(str()),
+      oauthScope: opt(str()),
+      oauthMetadataUrl: opt(str({ description: "Authorization server metadata URL override" })),
       projects: opt(str({ description: "Comma-separated project ids allowed to use this server; empty = all" })),
     }),
     execute: async (args, api) => {
@@ -685,6 +708,7 @@ function buildSystemTools(host: RuntimeHost): ToolRegistration[] {
         detail: [
           args.url === undefined ? `命令：${args.command ?? ""} ${parsedArgs.join(" ")}` : `HTTP：${args.url}`,
           args.env === undefined ? "" : `环境变量：${Object.keys(parsedEnv).join(", ") || "（无）"}`,
+          args.oauth === true ? "OAuth：是（批准后打开浏览器授权）" : "",
           args.projects === undefined || args.projects.trim().length === 0
             ? "可用项目：全部"
             : `可用项目：${args.projects}`,
@@ -699,6 +723,16 @@ function buildSystemTools(host: RuntimeHost): ToolRegistration[] {
           args: parsedArgs,
           env: parsedEnv,
           headers: parsedHeaders,
+          ...(args.oauth === true
+            ? {
+                oauth: {
+                  ...(args.oauthClientId === undefined ? {} : { clientId: args.oauthClientId }),
+                  ...(args.oauthClientSecret === undefined ? {} : { clientSecret: args.oauthClientSecret }),
+                  ...(args.oauthScope === undefined ? {} : { scope: args.oauthScope }),
+                  ...(args.oauthMetadataUrl === undefined ? {} : { authorizationServerMetadataUrl: args.oauthMetadataUrl }),
+                },
+              }
+            : {}),
           projects: splitList(args.projects),
           ...(args.cwd === undefined ? {} : { cwd: args.cwd }),
         },
@@ -783,6 +817,7 @@ function buildProjectTools(host: RuntimeHost): ToolRegistration[] {
       role: opt(str({ description: "Executor role, e.g. 架构师 / 前端 / 后端 / 测试 / 文档" })),
       files: opt(str({ description: "Comma-separated files this task may modify; used for scheduling and review" })),
       dependsOn: opt(str({ description: "Comma-separated task ids that must finish first" })),
+      stage: opt(str({ description: "Workflow stage, e.g. design / implement / verify / accept" })),
     }),
     execute: async (args, api) => {
       const scope = host.scopeFor(conversationIdOf(api));
@@ -794,6 +829,7 @@ function buildProjectTools(host: RuntimeHost): ToolRegistration[] {
         role: args.role,
         files: splitList(args.files),
         dependsOn: splitList(args.dependsOn),
+        stage: args.stage,
       });
       return out(`任务已创建：${formatTask(task)}\n下一步：dispatch_task 或 dispatch_ready。`, { taskId: task.id });
     },
@@ -922,7 +958,7 @@ function buildProjectTools(host: RuntimeHost): ToolRegistration[] {
       if (task === undefined) return out(`任务 ${args.taskId} 不存在。`);
       if (scope.project !== undefined && task.projectId !== scope.project.id) return out("不能验收其他项目的任务。");
       try {
-        host.acceptTask(task.id, args.note);
+        await host.acceptTask(task.id, args.note);
         return out(`已验收通过：${task.title}`);
       } catch (error) {
         return out(`验收失败：${error instanceof Error ? error.message : String(error)}`);
@@ -943,10 +979,46 @@ function buildProjectTools(host: RuntimeHost): ToolRegistration[] {
       if (task === undefined) return out(`任务 ${args.taskId} 不存在。`);
       if (scope.project !== undefined && task.projectId !== scope.project.id) return out("不能退回其他项目的任务。");
       try {
-        host.rejectTask(task.id, args.note);
+        await host.rejectTask(task.id, args.note);
         return out(`已退回：${task.title}\n原因：${args.note}\n任务已回到 todo，可重新派发。`);
       } catch (error) {
         return out(`退回失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  });
+
+  const advanceTask = defineTool({
+    name: "advance_task",
+    description: "Move a task to the next workflow stage and put it back to todo for a fresh role run.",
+    parameters: obj({ taskId: str() }),
+    execute: async (args, api) => {
+      const scope = host.scopeFor(conversationIdOf(api));
+      const task = host.store.getTaskRecord(args.taskId);
+      if (task === undefined) return out(`任务 ${args.taskId} 不存在。`);
+      if (scope.project !== undefined && task.projectId !== scope.project.id) return out("不能推进其他项目的任务。");
+      try {
+        await host.advanceTask(task.id);
+        return out(`任务已推进到下一阶段：${host.store.getTaskRecord(task.id)?.stage}`);
+      } catch (error) {
+        return out(`推进失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  });
+
+  const setWorkflow = defineTool({
+    name: "set_workflow",
+    description: "Set the project workflow stages, in order. Tasks carry a stage and can be advanced with advance_task.",
+    parameters: obj({
+      stages: str({ description: "Comma-separated stage names, e.g. design,implement,verify,accept" }),
+    }),
+    execute: async (args, api) => {
+      const scope = host.scopeFor(conversationIdOf(api));
+      if (scope.project === undefined) return out("当前对话不属于任何项目。");
+      try {
+        host.setWorkflow(scope.project.id, splitList(args.stages));
+        return out(`工作流已更新：${splitList(args.stages).join(" → ")}`);
+      } catch (error) {
+        return out(`更新失败：${error instanceof Error ? error.message : String(error)}`);
       }
     },
   });
@@ -1079,6 +1151,8 @@ function buildProjectTools(host: RuntimeHost): ToolRegistration[] {
     acceptTask,
     rejectTask,
     retryTask,
+    advanceTask,
+    setWorkflow,
     messageSystem,
     writeSkill,
     roleUpsert,

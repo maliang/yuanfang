@@ -6,6 +6,7 @@ const KIND_LABEL: Record<string, string> = {
   shell: "命令",
   install: "安装",
   mcp: "MCP",
+  plugin: "插件",
   network: "网络",
   other: "其他",
 };

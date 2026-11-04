@@ -3,16 +3,19 @@ import { api } from "../lib/api";
 
 export function NewTaskModal({
   projectId,
+  workflow,
   onClose,
   onCreated,
 }: {
   projectId: string;
+  workflow: string[];
   onClose: () => void;
   onCreated: () => void;
 }) {
   const [title, setTitle] = useState("");
   const [brief, setBrief] = useState("");
   const [role, setRole] = useState("执行");
+  const [stage, setStage] = useState(workflow.includes("implement") ? "implement" : (workflow[0] ?? "implement"));
   const [files, setFiles] = useState("");
   const [dependsOn, setDependsOn] = useState("");
   const [busy, setBusy] = useState(false);
@@ -31,6 +34,7 @@ export function NewTaskModal({
         title: title.trim(),
         brief: brief.trim(),
         role: role.trim() || "执行",
+        stage,
         files: files.split(",").map((item) => item.trim()).filter(Boolean),
         dependsOn: dependsOn.split(",").map((item) => item.trim()).filter(Boolean),
       });

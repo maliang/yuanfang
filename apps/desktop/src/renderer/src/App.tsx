@@ -468,6 +468,9 @@ function MainApp() {
             <div className="boot-warning">
               <strong>模型不可用</strong>
               <span>{status.warning}</span>
+              <button className="ghost-button small" onClick={() => setPanel("settings")}>
+                去设置凭据
+              </button>
             </div>
           ) : null}
 

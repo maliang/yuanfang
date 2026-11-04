@@ -1,6 +1,6 @@
 {
   "name": "yuanfang",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -15,7 +15,8 @@
     "typecheck": "npm run build:core && npm run typecheck -w @yuanfang/shared && npm run typecheck -w @yuanfang/core && npm run typecheck -w @yuanfang/desktop",
     "smoke": "npm run build:core && node packages/core/dist/smoke.js",
     "app": "npm run build && node_modules/.bin/electron apps/desktop",
-    "backup": "node scripts/backup.mjs"
+    "backup": "node scripts/backup.mjs",
+    "dist": "npm run build && npm run dist -w @yuanfang/desktop"
   },
   "engines": {
     "node": ">=22.19.0"

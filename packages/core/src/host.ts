@@ -32,6 +32,7 @@ export interface CreateTaskInput {
   role?: string;
   files?: string[];
   dependsOn?: string[];
+  stage?: string;
 }
 
 export interface RuntimeHost {
@@ -68,16 +69,19 @@ export interface RuntimeHost {
   dispatchTask(taskId: string): Promise<{ reporterId: string; roleConversationId: string }>;
   cancelTask(taskId: string): Promise<void>;
   reportTaskProgress(taskId: string, progress: string): void;
-  acceptTask(taskId: string, note?: string): void;
+  acceptTask(taskId: string, note?: string): Promise<void>;
   updateMemory(id: string, change: { title?: string; body?: string; tags?: string[]; pinned?: boolean }): import("@yuanfang/shared").MemoryEntry | undefined;
   deleteMemory(id: string): boolean;
-  rejectTask(taskId: string, note: string): void;
+  rejectTask(taskId: string, note: string): Promise<void>;
+  advanceTask(taskId: string): Promise<void>;
+  setWorkflow(projectId: string, stages: string[]): void;
   retryTask(taskId: string): Promise<{ reporterId: string; roleConversationId: string }>;
   abortConversation(conversationId: string): Promise<void>;
   acquireTaskClaims(taskId: string, files: string[], signal?: AbortSignal): Promise<void>;
   releaseTaskClaims(taskId: string): void;
   scheduleProjectIndex(projectId: string): void;
   reloadPlugins(): Promise<void>;
+  savePlugin(name: string, code: string, permissions?: string[]): Promise<import("@yuanfang/shared").PluginInfo>;
   removePlugin(name: string): Promise<boolean>;
   removeSkill(name: string, scope: "global" | "project", projectId?: string | null): Promise<boolean>;
 }

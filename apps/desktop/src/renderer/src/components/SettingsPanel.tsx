@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { RuntimeConfigView, UpdateConfigInput } from "@yuanfang/shared";
 import { CredentialsSection } from "./CredentialsSection";
+import { RolesSection } from "./RolesSection";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -19,8 +20,8 @@ export function SettingsPanel({
   const [persona, setPersona] = useState(config.persona);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [plugins, setPlugins] = useState<Array<{ name: string; description: string; loaded: boolean; error: string | null; path: string }>>([]);
-  const [mcpServers, setMcpServers] = useState<Array<{ name: string; command: string; args: string[]; url: string | null; projects: string[]; connected: boolean; tools: Array<{ name: string; description: string }>; error: string | null }>>([]);
+  const [plugins, setPlugins] = useState<Array<{ name: string; description: string; loaded: boolean; error: string | null; path: string; permissions: string[]; sandboxed: boolean }>>([]);
+  const [mcpServers, setMcpServers] = useState<Array<{ name: string; command: string; args: string[]; url: string | null; oauth: boolean; projects: string[]; connected: boolean; tools: Array<{ name: string; description: string }>; error: string | null }>>([]);
   const [modelQuery, setModelQuery] = useState("");
 
   useEffect(() => {
@@ -69,6 +70,9 @@ export function SettingsPanel({
         maxTurns: draft.maxTurns,
         maxConcurrentTasks: draft.maxConcurrentTasks,
         notifyLevel: draft.notifyLevel,
+        worktreePerTask: draft.worktreePerTask,
+        dailyTokenBudget: draft.dailyTokenBudget,
+        updateFeedUrl: draft.updateFeedUrl,
         persona,
       });
       onClose();
@@ -137,6 +141,8 @@ export function SettingsPanel({
             </div>
             <p className="muted small">默认「元芳」。名称用于对话、通知、人格提示和托盘提示。</p>
           </section>
+
+          <RolesSection availableModels={config.availableModels} />
 
           <CredentialsSection
             onPickModel={(target, provider, modelId) => {
@@ -211,6 +217,15 @@ export function SettingsPanel({
                   <option value="off">关闭</option>
                 </select>
               </label>
+              <label>
+                每日 token 预算（0 = 不限）
+                <input
+                  type="number"
+                  min={0}
+                  value={draft.dailyTokenBudget}
+                  onChange={(event) => setDraft({ ...draft, dailyTokenBudget: Number(event.target.value) })}
+                />
+              </label>
             </div>
           </section>
 
@@ -219,6 +234,37 @@ export function SettingsPanel({
             <p className="muted">系统 Agent 的人格写在这里。每次请求都会重新读取。</p>
             <textarea className="persona-editor" value={persona} rows={14} onChange={(event) => setPersona(event.target.value)} />
             <div className="muted small">{config.personaPath}</div>
+          </section>
+
+          <section className="settings-section">
+            <h3>任务隔离</h3>
+            <label className="inline-check">
+              <input
+                type="checkbox"
+                checked={draft.worktreePerTask}
+                onChange={(event) => setDraft({ ...draft, worktreePerTask: event.target.checked })}
+              />
+              每个任务使用独立 git worktree（要求项目是干净的 git 仓库）
+            </label>
+            <p className="muted small">
+              开启后角色在独立分支工作；验收通过时自动合并回主工作树，退回/取消时丢弃。git 不干净或没有提交时自动回退到主工作区。
+            </p>
+          </section>
+
+          <section className="settings-section">
+            <h3>更新</h3>
+            <label>
+              更新源（latest-mac.yml）
+              <input
+                value={draft.updateFeedUrl}
+                onChange={(event) => setDraft({ ...draft, updateFeedUrl: event.target.value })}
+                placeholder="https://example.com/yuanfang/latest-mac.yml"
+              />
+            </label>
+            <p className="muted small">打包版本启动后会检查更新；发现新版本先询问你，同意后下载并自动重启安装。</p>
+            <button className="ghost-button small" onClick={() => void window.yuanfang.checkForUpdates()}>
+              立即检查更新
+            </button>
           </section>
 
           <section className="settings-section">
@@ -241,6 +287,7 @@ export function SettingsPanel({
                   <div>
                     <strong>{plugin.name}</strong>
                     <p>{plugin.description || "（无描述）"}</p>
+                    <p className="muted small">权限：{plugin.permissions.length > 0 ? plugin.permissions.join(", ") : "无"} · {plugin.sandboxed ? "沙箱" : "进程内"}</p>
                     {plugin.error !== null ? <span className="task-error">{plugin.error}</span> : null}
                   </div>
                   <div className="plugin-actions">
@@ -271,7 +318,7 @@ export function SettingsPanel({
                 <div key={server.name} className="plugin-row">
                   <div>
                     <strong>{server.name}</strong>
-                    <p>{server.url ?? `${server.command} ${server.args.join(" ")}`}</p>
+                    <p>{server.url ?? `${server.command} ${server.args.join(" ")}`}{server.oauth ? " · OAuth" : ""}</p>
                     {server.projects.length > 0 ? <p className="muted small">项目：{server.projects.join(", ")}</p> : null}
                     <p className="muted small">{server.tools.map((tool) => tool.name).join(", ") || "无工具"}</p>
                     {server.error !== null ? <span className="task-error">{server.error}</span> : null}

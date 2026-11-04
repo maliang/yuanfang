@@ -11,6 +11,7 @@ export interface RoleRunInput {
   title: string;
   role: string;
   brief: string;
+  worktreePath?: string;
 }
 
 export type RoleRunState =
@@ -76,7 +77,7 @@ function createRoleRun(deps: TaskDeps) {
         // Reserve every declared file for the whole task. A second task touching
         // the same file waits here, before its role agent starts, so it never
         // reads a stale file and plans a change against outdated content.
-        if (record.files.length > 0) {
+        if (record.files.length > 0 && record.worktreePath === null) {
           host.store.updateTask(record.id, { status: "waiting", progress: "等待文件锁" });
           host.notify({
             type: "task_updated",
@@ -130,7 +131,7 @@ function createRoleRun(deps: TaskDeps) {
         const { host } = deps;
         const state = task.state.checkpoint;
         const record = host.store.getTaskRecord(task.input.dbTaskId);
-        if (record !== undefined && record.files.length > 0) {
+        if (record !== undefined && record.files.length > 0 && record.worktreePath === null) {
           await host.acquireTaskClaims(record.id, record.files, runtime.signal);
         }
         const approval = host.store.getApproval(state.approvalId);
@@ -181,7 +182,7 @@ function createRoleRun(deps: TaskDeps) {
           await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
           return;
         }
-        if (record.files.length > 0) {
+        if (record.files.length > 0 && record.worktreePath === null) {
           await host.acquireTaskClaims(record.id, record.files, runtime.signal);
         }
         const conversation = await runtime.conversation(

@@ -20,7 +20,7 @@ export type TaskStatus =
 
 export type ApprovalStatus = "pending" | "approved" | "denied" | "expired";
 
-export type ApprovalKind = "shell" | "install" | "mcp" | "network" | "other";
+export type ApprovalKind = "shell" | "install" | "mcp" | "network" | "plugin" | "other";
 
 export type MemoryKind = "note" | "decision" | "architecture" | "episode" | "preference";
 
@@ -53,6 +53,7 @@ export interface ProjectSummary {
   lastActiveAt: number;
   totalMs: number;
   stats: TokenStats;
+  workflow: string[];
   taskCounts: Record<TaskStatus, number>;
   activeTaskCount: number;
   pendingApprovalCount: number;
@@ -78,6 +79,9 @@ export interface TaskSummary {
   durableTaskId: string | null;
   dependsOn: string[];
   files: string[];
+  stage: string;
+  worktreePath: string | null;
+  worktreeBranch: string | null;
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
@@ -122,6 +126,28 @@ export interface MemoryEntry {
   createdAt: number;
   updatedAt: number;
 }
+
+export interface LoginPromptView {
+  id: string;
+  type: "text" | "secret" | "select" | "manual_code";
+  message: string;
+  placeholder?: string;
+  options?: Array<{ id: string; label: string; description?: string }>;
+}
+
+export type LoginEventView =
+  | { type: "info"; message: string; links?: Array<{ url: string; label?: string }> }
+  | { type: "auth_url"; url: string; instructions?: string }
+  | {
+      type: "device_code";
+      userCode: string;
+      verificationUri: string;
+      openBrowserOnConfirm?: boolean;
+      copyCodeOnConfirm?: boolean;
+      intervalSeconds?: number;
+      expiresInSeconds?: number;
+    }
+  | { type: "progress"; message: string };
 
 export interface NotificationRecord {
   id: number;
@@ -180,6 +206,8 @@ export interface PluginInfo {
   loaded: boolean;
   error: string | null;
   updatedAt: number;
+  permissions: string[];
+  sandboxed: boolean;
 }
 
 export interface FileIndexEntry {
@@ -196,6 +224,13 @@ export interface FileLockInfo {
   owner: string;
   projectId: string | null;
   acquiredAt: number;
+}
+
+export interface RoleDefinitionView {
+  name: string;
+  description: string;
+  instructions: string;
+  model: { provider: string; modelId: string } | null;
 }
 
 export interface ProviderView {
@@ -240,6 +275,9 @@ export interface RuntimeConfigView {
   maxTurns: number;
   maxConcurrentTasks: number;
   notifyLevel: "all" | "important" | "off";
+  worktreePerTask: boolean;
+  dailyTokenBudget: number;
+  updateFeedUrl: string;
   persona: string;
   personaPath: string;
   defaultProjectDir: string;
@@ -259,6 +297,9 @@ export interface UpdateConfigInput {
   maxTurns?: number;
   maxConcurrentTasks?: number;
   notifyLevel?: "all" | "important" | "off";
+  worktreePerTask?: boolean;
+  dailyTokenBudget?: number;
+  updateFeedUrl?: string;
   persona?: string;
 }
 
@@ -288,6 +329,7 @@ export interface CreateTaskInput {
   role?: string;
   files?: string[];
   dependsOn?: string[];
+  stage?: string;
 }
 
 export interface SearchHit {
@@ -374,6 +416,29 @@ export type RuntimeEvent =
       locks: FileLockInfo[];
     }
   | {
+      type: "external_url";
+      url: string;
+    }
+  | {
+      type: "login_prompt";
+      loginId: string;
+      providerId: string;
+      prompt: LoginPromptView;
+    }
+  | {
+      type: "login_event";
+      loginId: string;
+      providerId: string;
+      event: LoginEventView;
+    }
+  | {
+      type: "login_done";
+      loginId: string;
+      providerId: string;
+      ok: boolean;
+      error?: string;
+    }
+  | {
       type: "log";
       level: "info" | "warn" | "error";
       message: string;
@@ -427,6 +492,12 @@ export const IPC = {
   getProviderModels: "yf:getProviderModels",
   saveProviderKey: "yf:saveProviderKey",
   removeProviderKey: "yf:removeProviderKey",
+  getRoles: "yf:getRoles",
+  saveRole: "yf:saveRole",
+  importPiCredentials: "yf:importPiCredentials",
+  beginProviderLogin: "yf:beginProviderLogin",
+  respondLoginPrompt: "yf:respondLoginPrompt",
+  cancelProviderLogin: "yf:cancelProviderLogin",
   updateConfig: "yf:updateConfig",
   getSkills: "yf:getSkills",
   saveSkill: "yf:saveSkill",
@@ -440,6 +511,7 @@ export const IPC = {
   quickAsk: "yf:quickAsk",
   hideQuickAsk: "yf:hideQuickAsk",
   openMain: "yf:openMain",
+  checkForUpdates: "yf:checkForUpdates",
   // main -> renderer
   event: "yf:event",
   navigate: "yf:navigate",

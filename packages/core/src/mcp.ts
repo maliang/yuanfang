@@ -1,6 +1,15 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { McpClient, StdioTransport, StreamableHttpTransport, toLlmContent } from "@earendil-works/pi-mcp";
+import {
+  adaptOAuthProvider,
+  authorizeMcp,
+  McpOAuthAuthorizationRequiredError,
+  McpOAuthProvider,
+  OAuthCallbackServer,
+  type McpOAuthState,
+  type McpOAuthStateStore,
+} from "@earendil-works/pi-mcp/oauth";
 import { defineExtension, defineTool, type Extension, type Registry, type ToolRegistration } from "@earendil-works/pi-durable";
 
 export interface McpServerConfig {
@@ -12,6 +21,13 @@ export interface McpServerConfig {
   /** Streamable HTTP server endpoint. */
   url?: string;
   headers?: Record<string, string>;
+  /** MCP OAuth for a Streamable HTTP server. */
+  oauth?: {
+    clientId?: string;
+    clientSecret?: string;
+    scope?: string;
+    authorizationServerMetadataUrl?: string;
+  };
   /** Restrict tools to these project ids; empty/absent means every project. */
   projects?: string[];
   enabled?: boolean;
@@ -26,6 +42,7 @@ export interface McpServerInfo {
   command: string;
   args: string[];
   url: string | null;
+  oauth: boolean;
   projects: string[];
   connected: boolean;
   tools: Array<{ name: string; description: string }>;
@@ -46,6 +63,7 @@ export class McpService {
   readonly #registry: () => Registry;
   readonly #log: (level: "info" | "warn" | "error", message: string) => void;
   readonly #projectForConversation: (conversationId: string) => string | null;
+  readonly #openUrl: (url: string) => void;
   readonly #servers = new Map<string, InstalledServer>();
 
   constructor(
@@ -53,11 +71,13 @@ export class McpService {
     registry: () => Registry,
     log: (level: "info" | "warn" | "error", message: string) => void,
     projectForConversation: (conversationId: string) => string | null,
+    openUrl: (url: string) => void,
   ) {
     this.#file = file;
     this.#registry = registry;
     this.#log = log;
     this.#projectForConversation = projectForConversation;
+    this.#openUrl = openUrl;
   }
 
   async list(): Promise<McpServerInfo[]> {
@@ -69,6 +89,7 @@ export class McpService {
         command: server.command ?? "",
         args: server.args ?? [],
         url: server.url ?? null,
+        oauth: server.oauth !== undefined,
         projects: server.projects ?? [],
         connected: installed !== undefined && installed.error === null,
         tools: installed?.tools ?? [],
@@ -93,22 +114,48 @@ export class McpService {
     if ((config.url ?? "").trim().length === 0 && (config.command ?? "").trim().length === 0) {
       throw new Error("MCP 需要 command 或 url");
     }
-    const transport =
-      config.url !== undefined && config.url.trim().length > 0
-        ? new StreamableHttpTransport({ url: config.url, ...(config.headers === undefined ? {} : { headers: config.headers }) })
-        : new StdioTransport({
-            command: config.command ?? "",
-            ...(config.args === undefined ? {} : { args: config.args }),
-            ...(config.env === undefined ? {} : { env: config.env }),
-            ...(config.cwd === undefined ? {} : { cwd: config.cwd }),
-            inheritEnv: true,
-            stderr: "pipe",
-            onStderr: (chunk) => {
-              const text = chunk.trim();
-              if (text.length > 0) this.#log("info", `[mcp:${name}] ${text.slice(0, 500)}`);
-            },
-          });
-    const client = new McpClient({ name: "yuanfang", version: "0.1.0", requestTimeoutMs: 60_000 });
+    let callback: OAuthCallbackServer | undefined;
+    let oauthProvider: McpOAuthProvider | undefined;
+    let transport;
+    if (config.url !== undefined && config.url.trim().length > 0) {
+      if (config.oauth !== undefined) {
+        callback = await OAuthCallbackServer.listen({ renderPage: (page) => page.ok ? "元芳已完成 MCP 授权，可以关闭此页面。" : `授权失败：${page.message}` });
+        const stateStore = new FileOAuthStateStore(join(dirname(this.#file), "mcp-oauth", `${sanitize(name)}.json`));
+        oauthProvider = new McpOAuthProvider({
+          serverUrl: config.url,
+          redirectUrl: callback.redirectUrl,
+          clientMetadata: { client_name: "元芳", redirect_uris: [callback.redirectUrl] },
+          ...(config.oauth.clientId === undefined ? {} : { clientId: config.oauth.clientId }),
+          ...(config.oauth.clientSecret === undefined ? {} : { clientSecret: config.oauth.clientSecret }),
+          store: stateStore,
+          onRedirect: (url) => this.#openUrl(url.toString()),
+        });
+        transport = new StreamableHttpTransport({
+          url: config.url,
+          ...(config.headers === undefined ? {} : { headers: config.headers }),
+          authProvider: adaptOAuthProvider(oauthProvider),
+        });
+      } else {
+        transport = new StreamableHttpTransport({
+          url: config.url,
+          ...(config.headers === undefined ? {} : { headers: config.headers }),
+        });
+      }
+    } else {
+      transport = new StdioTransport({
+        command: config.command ?? "",
+        ...(config.args === undefined ? {} : { args: config.args }),
+        ...(config.env === undefined ? {} : { env: config.env }),
+        ...(config.cwd === undefined ? {} : { cwd: config.cwd }),
+        inheritEnv: true,
+        stderr: "pipe",
+        onStderr: (chunk) => {
+          const text = chunk.trim();
+          if (text.length > 0) this.#log("info", `[mcp:${name}] ${text.slice(0, 500)}`);
+        },
+      });
+    }
+    let client = new McpClient({ name: "yuanfang", version: "0.1.0", requestTimeoutMs: 60_000 });
     const server: InstalledServer = {
       name,
       config,
@@ -118,7 +165,42 @@ export class McpService {
       error: null,
     };
     try {
-      await client.connect(transport);
+      try {
+        await client.connect(transport);
+      } catch (error) {
+        if (
+          config.oauth === undefined ||
+          oauthProvider === undefined ||
+          callback === undefined ||
+          !(error instanceof McpOAuthAuthorizationRequiredError)
+        ) {
+          throw error;
+        }
+        const state = await oauthProvider.state();
+        const result = await callback.waitForCallback(state);
+        await authorizeMcp(oauthProvider, {
+          serverUrl: config.url!,
+          authorizationCode: result.code,
+          ...(result.iss === undefined ? {} : { iss: result.iss }),
+          ...(config.oauth.scope === undefined ? {} : { scope: config.oauth.scope }),
+          ...(config.oauth.authorizationServerMetadataUrl === undefined
+            ? {}
+            : { authorizationServerMetadataUrl: new URL(config.oauth.authorizationServerMetadataUrl) }),
+        });
+        const retry = new McpClient({ name: "yuanfang", version: "0.1.0", requestTimeoutMs: 60_000 });
+        await retry.connect(
+          new StreamableHttpTransport({
+            url: config.url!,
+            ...(config.headers === undefined ? {} : { headers: config.headers }),
+            authProvider: adaptOAuthProvider(oauthProvider),
+          }),
+        );
+        // The first client is unusable after the authorization failure; use the
+        // freshly authorized one for tools and for shutdown.
+        await client.close().catch(() => undefined);
+        client = retry;
+        server.client = retry;
+      }
       const tools = await client.listTools();
       const registrations: ToolRegistration[] = tools.map((tool) => {
         const toolName = `mcp_${sanitize(name)}_${sanitize(tool.name)}`.slice(0, 64);
@@ -166,11 +248,13 @@ export class McpService {
       this.#servers.set(name, server);
       await this.#writeServer(name, { ...config, enabled: true });
       this.#log("info", `MCP ${name} 已连接，${registrations.length} 个工具`);
+      await callback?.close().catch(() => undefined);
       return {
         name,
         command: config.command ?? "",
         args: config.args ?? [],
         url: config.url ?? null,
+        oauth: config.oauth !== undefined,
         projects: config.projects ?? [],
         connected: true,
         tools: server.tools,
@@ -179,6 +263,7 @@ export class McpService {
     } catch (error) {
       server.error = error instanceof Error ? error.message : String(error);
       this.#servers.set(name, server);
+      await callback?.close().catch(() => undefined);
       await client.close().catch(() => undefined);
       throw error;
     }
@@ -229,6 +314,30 @@ export class McpService {
     const current = await this.#readConfig();
     current.servers[name] = config;
     await this.#writeConfig(current);
+  }
+}
+
+class FileOAuthStateStore implements McpOAuthStateStore {
+  readonly #file: string;
+
+  constructor(file: string) {
+    this.#file = file;
+  }
+
+  async load(): Promise<McpOAuthState | undefined> {
+    try {
+      const parsed: unknown = JSON.parse(await readFile(this.#file, "utf8"));
+      return parsed !== null && typeof parsed === "object" ? (parsed as McpOAuthState) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async save(state: McpOAuthState): Promise<void> {
+    await mkdir(dirname(this.#file), { recursive: true });
+    const temporary = `${this.#file}.${process.pid}.tmp`;
+    await writeFile(temporary, JSON.stringify(state, null, 2), { mode: 0o600 });
+    await rename(temporary, this.#file);
   }
 }
 

@@ -2792,3 +2792,123 @@ select:focus-visible,
   color: var(--muted);
   font-size: 9.5px;
 }
+
+.workflow-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.workflow-stage {
+  font-size: 10.5px;
+  color: var(--text-soft);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+}
+
+.workflow-stage em {
+  color: var(--muted);
+  font-style: normal;
+  margin-left: 3px;
+}
+
+.oauth-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 11px;
+  margin: 10px 0;
+  background: rgba(124, 140, 255, 0.035);
+}
+
+.oauth-box > div:first-child {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.oauth-box p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.login-prompt {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.login-prompt label {
+  flex: 1;
+}
+
+.credential-import {
+  display: flex;
+  justify-content: flex-end;
+  margin: 6px 0 2px;
+}
+
+/* ── roles ─────────────────────────────────────────────────────────────── */
+
+.roles-layout {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  gap: 14px;
+  margin-top: 10px;
+}
+
+.role-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.role-item {
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.role-item:hover,
+.role-item.active {
+  border-color: rgba(124, 140, 255, 0.35);
+  background: rgba(124, 140, 255, 0.07);
+}
+
+.role-item strong {
+  font-size: 11.5px;
+}
+
+.role-item span,
+.role-item em {
+  color: var(--muted);
+  font-size: 9.5px;
+  font-style: normal;
+  line-height: 1.4;
+}
+
+.role-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+}

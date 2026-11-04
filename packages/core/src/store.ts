@@ -101,6 +101,7 @@ interface ProjectRow {
   created_at: number;
   updated_at: number;
   last_active_at: number;
+  workflow: string;
   total_ms: number;
   tokens_in: number;
   tokens_out: number;
@@ -121,6 +122,9 @@ interface TaskRow {
   durable_task_id: string | null;
   depends_on: string;
   files: string;
+  stage: string;
+  worktree_path: string | null;
+  worktree_branch: string | null;
   created_at: number;
   started_at: number | null;
   finished_at: number | null;
@@ -175,6 +179,7 @@ export interface ProjectRecord {
   createdAt: number;
   updatedAt: number;
   lastActiveAt: number;
+  workflow: string[];
   totalMs: number;
 }
 
@@ -225,6 +230,12 @@ export class AppStore {
     this.db.prepare("DELETE FROM memories WHERE scope = ?").run(id);
     this.db.prepare("DELETE FROM conversation_usage WHERE project_id = ?").run(id);
     return true;
+  }
+
+  setProjectWorkflow(id: string, workflow: string[]): void {
+    this.db
+      .prepare("UPDATE projects SET workflow = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(workflow), this.#now(), id);
   }
 
   setProjectStatus(id: string, status: ProjectStatus): void {
@@ -282,6 +293,7 @@ export class AppStore {
       createdAt: record.createdAt,
       updatedAt: row.updated_at,
       lastActiveAt: row.last_active_at,
+      workflow: parseJson<string[]>(row.workflow, ["design", "implement", "verify", "accept"]),
       totalMs: Number(row.total_ms),
       stats: makeStats({
         input: Number(row.tokens_in),
@@ -327,13 +339,14 @@ export class AppStore {
     role: string;
     dependsOn?: string[];
     files?: string[];
+    stage?: string;
     model?: string | null;
   }): TaskRecord {
     const now = this.#now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, project_id, title, brief, role, status, model, depends_on, files, created_at)
-         VALUES (?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?)`,
+        `INSERT INTO tasks (id, project_id, title, brief, role, status, model, depends_on, files, stage, created_at)
+         VALUES (?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)`,
       )
       .run(
         input.id,
@@ -344,6 +357,7 @@ export class AppStore {
         input.model ?? null,
         JSON.stringify(input.dependsOn ?? []),
         JSON.stringify(input.files ?? []),
+        input.stage ?? "implement",
         now,
       );
     this.touchProject(input.projectId);
@@ -373,6 +387,9 @@ export class AppStore {
       model: string | null;
       files: string[];
       dependsOn: string[];
+      stage: string;
+      worktreePath: string | null;
+      worktreeBranch: string | null;
     }>,
   ): TaskRecord | undefined {
     const current = this.getTaskRecord(id);
@@ -382,7 +399,7 @@ export class AppStore {
       .prepare(
         `UPDATE tasks SET title = ?, brief = ?, role = ?, status = ?, conversation_id = ?, durable_task_id = ?,
           started_at = ?, finished_at = ?, duration_ms = ?, progress = ?, error = ?, result = ?, model = ?, files = ?,
-          depends_on = ? WHERE id = ?`,
+          depends_on = ?, stage = ?, worktree_path = ?, worktree_branch = ? WHERE id = ?`,
       )
       .run(
         next.title,
@@ -400,6 +417,9 @@ export class AppStore {
         next.model,
         JSON.stringify(next.files),
         JSON.stringify(next.dependsOn),
+        next.stage,
+        next.worktreePath,
+        next.worktreeBranch,
         id,
       );
     this.touchProject(next.projectId);
@@ -468,6 +488,9 @@ export class AppStore {
       durableTaskId: record.durableTaskId,
       dependsOn: record.dependsOn,
       files: record.files,
+      stage: record.stage,
+      worktreePath: record.worktreePath,
+      worktreeBranch: record.worktreeBranch,
       createdAt: record.createdAt,
       startedAt: record.startedAt,
       finishedAt: record.finishedAt,
@@ -1009,8 +1032,29 @@ export class AppStore {
         totals.cost,
         this.#now(),
       );
+    this.addDailyUsage(delta.input + delta.output, delta.cost);
     if (projectId !== null) this.addProjectUsage(projectId, delta);
     return { delta };
+  }
+
+  addDailyUsage(tokens: number, cost: number): void {
+    if (tokens === 0 && cost === 0) return;
+    const day = new Date(this.#now()).toISOString().slice(0, 10);
+    this.db
+      .prepare(
+        `INSERT INTO usage_daily (day, tokens, cost) VALUES (?, ?, ?)
+         ON CONFLICT(day) DO UPDATE SET tokens = tokens + excluded.tokens, cost = cost + excluded.cost`,
+      )
+      .run(day, Math.max(0, Math.round(tokens)), Math.max(0, cost));
+  }
+
+  getDailyUsage(day = new Date(this.#now()).toISOString().slice(0, 10)): { day: string; tokens: number; cost: number } {
+    const row = this.db.prepare("SELECT * FROM usage_daily WHERE day = ?").get(day) as
+      | { day: string; tokens: number; cost: number }
+      | undefined;
+    return row === undefined
+      ? { day, tokens: 0, cost: 0 }
+      : { day: row.day, tokens: Number(row.tokens), cost: Number(row.cost) };
   }
 
   // ── agents ───────────────────────────────────────────────────────────────
@@ -1092,6 +1136,9 @@ export interface TaskRecord {
   durableTaskId: string | null;
   dependsOn: string[];
   files: string[];
+  stage: string;
+  worktreePath: string | null;
+  worktreeBranch: string | null;
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
@@ -1118,6 +1165,7 @@ function projectFromRow(row: ProjectRow): ProjectRecord {
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
     lastActiveAt: Number(row.last_active_at),
+    workflow: parseJson<string[]>(row.workflow, ["design", "implement", "verify", "accept"]),
     totalMs: Number(row.total_ms),
   };
 }
@@ -1135,6 +1183,9 @@ function taskFromRow(row: TaskRow): TaskRecord {
     durableTaskId: row.durable_task_id,
     dependsOn: parseJson<string[]>(row.depends_on, []),
     files: parseJson<string[]>(row.files, []),
+    stage: row.stage ?? "implement",
+    worktreePath: row.worktree_path,
+    worktreeBranch: row.worktree_branch,
     createdAt: Number(row.created_at),
     startedAt: row.started_at === null ? null : Number(row.started_at),
     finishedAt: row.finished_at === null ? null : Number(row.finished_at),
