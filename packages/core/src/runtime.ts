@@ -161,6 +161,9 @@ export class YuanfangRuntime implements RuntimeHost {
   #listeners = new Set<(event: RuntimeEvent) => void>();
   #status: RuntimeStatus;
   #usageTimer: NodeJS.Timeout | undefined;
+  #patrolTimer: NodeJS.Timeout | undefined;
+  #patrolStartedAt = Date.now();
+  #patrolNotified = new Set<string>();
   #projectLocks = new Map<string, Promise<string>>();
   #closed = false;
   #taskClaims = new Map<string, () => void>();
@@ -350,6 +353,12 @@ export class YuanfangRuntime implements RuntimeHost {
       void this.syncAllUsage().catch(() => undefined);
     }, 20_000);
     this.#usageTimer.unref?.();
+    this.#patrolTimer = setInterval(() => {
+      void this.#patrol().catch((error: unknown) => {
+        this.log("warn", `巡检失败：${error instanceof Error ? error.message : String(error)}`);
+      });
+    }, 60_000);
+    this.#patrolTimer.unref?.();
 
     this.#status = {
       ...this.#status,
@@ -1104,10 +1113,17 @@ export class YuanfangRuntime implements RuntimeHost {
     }
   }
 
+  async #patrol(): Promise<void> {
+    await this.#recoverStaleTasks();
+    await this.#reviewFailedTasks();
+  }
+
   async #recoverStaleTasks(): Promise<void> {
     const now = Date.now();
-    // Recover old pending checkpoints from before the stream timeout existed,
-    // or a process killed mid-run. New requests are bounded by settings.stream.
+    // Model requests are bounded by settings.stream. This catches request
+    // checkpoints from before that timeout existed, plus orphaned tool tasks.
+    // A generation waiting for tools is not aborted here: its child tool owns
+    // the timeout, and aborting the parent would hide the useful error.
     const generationLimit = this.config.staleGenerationMinutes * 60_000;
     const toolLimit = this.config.staleToolMinutes * 60_000;
     try {
@@ -1116,17 +1132,56 @@ export class YuanfangRuntime implements RuntimeHost {
         if (task.record.startedAt === undefined) continue;
         const age = now - task.record.startedAt;
         if (age < 0) continue;
-        const stale =
-          (task.record.kind === "pi.generation" && age > generationLimit) ||
-          (task.record.kind === "pi.tool" && age > toolLimit);
-        if (!stale) continue;
+        const checkpoint = task.record.state.checkpoint as { phase?: unknown } | undefined;
+        const phase = typeof checkpoint?.phase === "string" ? checkpoint.phase : "";
+        const staleGeneration =
+          task.record.kind === "pi.generation" &&
+          (phase === "request" || phase === "poll" || phase === "retry") &&
+          age > generationLimit;
+        const staleTool = task.record.kind === "pi.tool" && age > toolLimit;
+        if (!staleGeneration && !staleTool) continue;
         await this.harness.abortTask(task.record.id, SYSTEM_CONTEXT).catch((error: unknown) => {
-          this.log("warn", `恢复卡住的任务失败：${String(error)}`);
+          this.log("warn", `中止卡住的任务失败：${String(error)}`);
         });
-        this.log("warn", `已中止超时的 ${task.record.kind} 任务（${task.record.id}）`);
+        this.log("warn", `巡检中止超时的 ${task.record.kind} 任务（${task.record.id}）`);
       }
     } catch (error) {
       this.log("warn", `检查卡住任务失败：${String(error)}`);
+    }
+  }
+
+  async #reviewFailedTasks(): Promise<void> {
+    const cutoff = this.#patrolStartedAt - 30 * 60_000;
+    for (const project of this.store.listProjectRecords()) {
+      if (project.status !== "active") continue;
+      for (const task of this.store.listTaskRecords(project.id)) {
+        if (task.status !== "failed") continue;
+        if (task.finishedAt === null || task.finishedAt < cutoff) continue;
+        if (this.#patrolNotified.has(task.id)) continue;
+        const error = task.error?.trim() || "（没有错误文本）";
+        try {
+          await this.messageProject(
+            project.id,
+            [
+              "[系统巡检] 发现一个失败任务，请项目负责人当轮复核，不要忽略。",
+              `任务：${task.title}`,
+              `任务 ID：${task.id}`,
+              `角色：${task.role}`,
+              `错误：${clip(error, 900)}`,
+              "",
+              "请判断是任务 brief、执行方案、环境/权限还是工具问题：能修就 update_task 后重新派发；需要换方案就重拆；确认无法继续再取消。请在回复里写清处置结论。",
+            ].join("\n"),
+            {
+              entryKind: "yf.patrol_failure",
+              meta: { source: "patrol", taskId: task.id },
+            },
+          );
+          this.#patrolNotified.add(task.id);
+          this.log("info", `巡检已通知项目负责人复核失败任务 ${task.id}`);
+        } catch (error) {
+          this.log("warn", `巡检通知失败任务 ${task.id} 时出错：${String(error)}`);
+        }
+      }
     }
   }
 
