@@ -123,6 +123,10 @@ export function SettingsPanel({
         accent: draft.accent,
         defaultProjectName: draft.defaultProjectName,
         defaultProjectPath: draft.defaultProjectPath,
+        modelTimeoutMinutes: draft.modelTimeoutMinutes,
+        bashTimeoutMinutes: draft.bashTimeoutMinutes,
+        staleGenerationMinutes: draft.staleGenerationMinutes,
+        staleToolMinutes: draft.staleToolMinutes,
         theme: draft.theme,
         uiScale: draft.uiScale,
         persona,
@@ -434,6 +438,30 @@ export function SettingsPanel({
                   <p className="muted small">
                     使用 Electron 快捷键格式，例如 <code>CommandOrControl+Shift+Space</code>；保存后立即注册，重启后保留。
                     当前显示为 <strong>{formatHotkey(draft.quickAskHotkey)}</strong>。
+                  </p>
+                </section>
+                <section className="settings-section">
+                  <h3>超时与恢复</h3>
+                  <div className="form-row">
+                    <label>
+                      模型请求超时（分钟）
+                      <input type="number" min={1} max={60} value={draft.modelTimeoutMinutes} onChange={(event) => setDraft({ ...draft, modelTimeoutMinutes: Number(event.target.value) })} />
+                    </label>
+                    <label>
+                      Shell 单条命令超时（分钟）
+                      <input type="number" min={5} max={180} value={draft.bashTimeoutMinutes} onChange={(event) => setDraft({ ...draft, bashTimeoutMinutes: Number(event.target.value) })} />
+                    </label>
+                    <label>
+                      启动恢复：模型阈值（分钟）
+                      <input type="number" min={5} max={240} value={draft.staleGenerationMinutes} onChange={(event) => setDraft({ ...draft, staleGenerationMinutes: Number(event.target.value) })} />
+                    </label>
+                    <label>
+                      启动恢复：Shell 阈值（分钟）
+                      <input type="number" min={10} max={480} value={draft.staleToolMinutes} onChange={(event) => setDraft({ ...draft, staleToolMinutes: Number(event.target.value) })} />
+                    </label>
+                  </div>
+                  <p className="muted small">
+                    超时只作用于单次模型请求 / 单条 shell 命令，不是任务总时长。默认模型 5 分钟、Shell 30 分钟；启动恢复只处理上次强制退出或重启时超过阈值的旧 pending 请求。
                   </p>
                 </section>
                 <section className="settings-section">

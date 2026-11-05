@@ -294,6 +294,10 @@ export interface RuntimeConfigView {
   defaultProjectId: string;
   defaultProjectName: string;
   defaultProjectPath: string;
+  modelTimeoutMinutes: number;
+  bashTimeoutMinutes: number;
+  staleGenerationMinutes: number;
+  staleToolMinutes: number;
   persona: string;
   personaPath: string;
   defaultProjectDir: string;
@@ -322,6 +326,10 @@ export interface UpdateConfigInput {
   uiScale?: number;
   defaultProjectName?: string;
   defaultProjectPath?: string;
+  modelTimeoutMinutes?: number;
+  bashTimeoutMinutes?: number;
+  staleGenerationMinutes?: number;
+  staleToolMinutes?: number;
   persona?: string;
 }
 

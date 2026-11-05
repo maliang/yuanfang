@@ -30,6 +30,10 @@ export interface AppConfig {
   uiScale: number;
   defaultProjectName: string;
   defaultProjectPath: string;
+  modelTimeoutMinutes: number;
+  bashTimeoutMinutes: number;
+  staleGenerationMinutes: number;
+  staleToolMinutes: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -165,6 +169,12 @@ export async function ensureWorkspace(workspace?: string): Promise<Paths> {
   return paths;
 }
 
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.min(max, Math.max(min, Math.round(value)))
+    : fallback;
+}
+
 export async function loadConfig(workspace?: string): Promise<{ config: AppConfig; paths: Paths }> {
   const paths = await ensureWorkspace(workspace);
   const piSettings = await readJson<PiSettings>(paths.piSettingsFile);
@@ -203,6 +213,10 @@ export async function loadConfig(workspace?: string): Promise<{ config: AppConfi
         process.env.YUANFANG_DEFAULT_PROJECT_PATH ||
         join(homedir(), "Documents", "元芳日常"),
     ),
+    modelTimeoutMinutes: clampNumber(stored?.modelTimeoutMinutes, 1, 60, 5),
+    bashTimeoutMinutes: clampNumber(stored?.bashTimeoutMinutes, 5, 180, 30),
+    staleGenerationMinutes: clampNumber(stored?.staleGenerationMinutes, 5, 240, 15),
+    staleToolMinutes: clampNumber(stored?.staleToolMinutes, 10, 480, 30),
     createdAt: stored?.createdAt ?? now,
     updatedAt: stored?.updatedAt ?? now,
     ...stored,
@@ -216,6 +230,10 @@ export async function loadConfig(workspace?: string): Promise<{ config: AppConfi
   config.uiScale = Number.isFinite(config.uiScale) ? Math.min(1.4, Math.max(0.8, Number(config.uiScale))) : 1;
   config.defaultProjectName = config.defaultProjectName?.trim() || "日常";
   config.defaultProjectPath = resolveUserPath(config.defaultProjectPath?.trim() || join(homedir(), "Documents", "元芳日常"));
+  config.modelTimeoutMinutes = clampNumber(config.modelTimeoutMinutes, 1, 60, 5);
+  config.bashTimeoutMinutes = clampNumber(config.bashTimeoutMinutes, 5, 180, 30);
+  config.staleGenerationMinutes = clampNumber(config.staleGenerationMinutes, 5, 240, 15);
+  config.staleToolMinutes = clampNumber(config.staleToolMinutes, 10, 480, 30);
   if (stored === undefined) await saveConfig(paths, config);
   return { config, paths };
 }

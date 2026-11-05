@@ -25,7 +25,7 @@ function out(text: string, details?: JsonValue): TextResult {
   return details === undefined ? { output: [{ type: "text", text }] } : { output: [{ type: "text", text }], details };
 }
 
-const DEFAULT_BASH_TIMEOUT_SECONDS = 600;
+const DEFAULT_BASH_TIMEOUT_SECONDS = 30 * 60;
 
 function conversationIdOf(api: { conversationId: number }): string {
   return String(api.conversationId);
@@ -1227,7 +1227,8 @@ export function createExtensionSet(host: RuntimeHost, promptDeps: PromptDeps): E
           if (call.name !== "bash") return undefined;
           const command = typeof call.arguments.command === "string" ? call.arguments.command : "";
           const supplied = typeof call.arguments.timeout === "number" ? call.arguments.timeout : undefined;
-          const timeout = supplied !== undefined && supplied > 0 ? supplied : DEFAULT_BASH_TIMEOUT_SECONDS;
+          const configured = host.getConfig().bashTimeoutMinutes * 60;
+          const timeout = supplied !== undefined && supplied > 0 ? supplied : configured || DEFAULT_BASH_TIMEOUT_SECONDS;
           if (isPrivilegedCommand(command)) {
             const scope = host.scopeFor(String(api.conversationId));
             if (!host.store.hasShellGrant(hashCommand(command), scope.project?.id ?? null)) {

@@ -308,7 +308,7 @@ export class YuanfangRuntime implements RuntimeHost {
           toolExecution: "parallel",
           // A provider must not leave a conversation "busy" forever. 5 minutes is
           // long enough for a large reasoning turn, short enough to recover.
-          stream: { timeoutMs: 300_000, maxRetries: 2 },
+          stream: { timeoutMs: this.config.modelTimeoutMinutes * 60_000, maxRetries: 2 },
           retry: { enabled: true, maxRetries: 2, baseDelayMs: 1_000, maxAgentDelayMs: 30_000 },
           compaction: { reserveTokens: 20_000, keepRecentTokens: 12_000, backgroundTokens: 8_000 },
           progress: { partialIntervalMs: 120, outputIntervalMs: 120, persistWithinMs: 800 },
@@ -789,6 +789,10 @@ export class YuanfangRuntime implements RuntimeHost {
       defaultProjectId: "prj_default",
       defaultProjectName: this.config.defaultProjectName,
       defaultProjectPath: this.config.defaultProjectPath,
+      modelTimeoutMinutes: this.config.modelTimeoutMinutes,
+      bashTimeoutMinutes: this.config.bashTimeoutMinutes,
+      staleGenerationMinutes: this.config.staleGenerationMinutes,
+      staleToolMinutes: this.config.staleToolMinutes,
       persona,
       personaPath: this.paths.personaFile,
       defaultProjectDir: this.paths.projectsDir,
@@ -847,6 +851,18 @@ export class YuanfangRuntime implements RuntimeHost {
       ...(input.defaultProjectPath === undefined || input.defaultProjectPath.trim().length === 0
         ? {}
         : { defaultProjectPath: resolveUserPath(input.defaultProjectPath) }),
+      ...(input.modelTimeoutMinutes === undefined || !Number.isFinite(input.modelTimeoutMinutes)
+        ? {}
+        : { modelTimeoutMinutes: Math.min(60, Math.max(1, Math.round(input.modelTimeoutMinutes))) }),
+      ...(input.bashTimeoutMinutes === undefined || !Number.isFinite(input.bashTimeoutMinutes)
+        ? {}
+        : { bashTimeoutMinutes: Math.min(180, Math.max(5, Math.round(input.bashTimeoutMinutes))) }),
+      ...(input.staleGenerationMinutes === undefined || !Number.isFinite(input.staleGenerationMinutes)
+        ? {}
+        : { staleGenerationMinutes: Math.min(240, Math.max(5, Math.round(input.staleGenerationMinutes))) }),
+      ...(input.staleToolMinutes === undefined || !Number.isFinite(input.staleToolMinutes)
+        ? {}
+        : { staleToolMinutes: Math.min(480, Math.max(10, Math.round(input.staleToolMinutes))) }),
     };
     this.config = next;
     await saveConfig(this.paths, next);
@@ -1092,8 +1108,8 @@ export class YuanfangRuntime implements RuntimeHost {
     const now = Date.now();
     // Recover old pending checkpoints from before the stream timeout existed,
     // or a process killed mid-run. New requests are bounded by settings.stream.
-    const generationLimit = 15 * 60_000;
-    const toolLimit = 30 * 60_000;
+    const generationLimit = this.config.staleGenerationMinutes * 60_000;
+    const toolLimit = this.config.staleToolMinutes * 60_000;
     try {
       const inspection = await this.harness.inspect(SYSTEM_CONTEXT);
       for (const task of inspection.tasks) {
