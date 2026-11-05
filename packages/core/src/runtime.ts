@@ -306,6 +306,10 @@ export class YuanfangRuntime implements RuntimeHost {
         env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? paths.workspace }),
         settings: {
           toolExecution: "parallel",
+          // A provider must not leave a conversation "busy" forever. 5 minutes is
+          // long enough for a large reasoning turn, short enough to recover.
+          stream: { timeoutMs: 300_000, maxRetries: 2 },
+          retry: { enabled: true, maxRetries: 2, baseDelayMs: 1_000, maxAgentDelayMs: 30_000 },
           compaction: { reserveTokens: 20_000, keepRecentTokens: 12_000, backgroundTokens: 8_000 },
           progress: { partialIntervalMs: 120, outputIntervalMs: 120, persistWithinMs: 800 },
           restartLimit: 8,
@@ -322,6 +326,7 @@ export class YuanfangRuntime implements RuntimeHost {
       SYSTEM_CONTEXT,
     );
     this.harness.resume();
+    await this.#recoverStaleTasks();
 
     this.locks.subscribe((locks) => this.#emit({ type: "locks", locks }));
 
@@ -1080,6 +1085,32 @@ export class YuanfangRuntime implements RuntimeHost {
       this.#emit({ type: "project_updated", project: summary });
     } catch (error) {
       this.log("warn", `默认项目初始化失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async #recoverStaleTasks(): Promise<void> {
+    const now = Date.now();
+    // Recover old pending checkpoints from before the stream timeout existed,
+    // or a process killed mid-run. New requests are bounded by settings.stream.
+    const generationLimit = 15 * 60_000;
+    const toolLimit = 30 * 60_000;
+    try {
+      const inspection = await this.harness.inspect(SYSTEM_CONTEXT);
+      for (const task of inspection.tasks) {
+        if (task.record.startedAt === undefined) continue;
+        const age = now - task.record.startedAt;
+        if (age < 0) continue;
+        const stale =
+          (task.record.kind === "pi.generation" && age > generationLimit) ||
+          (task.record.kind === "pi.tool" && age > toolLimit);
+        if (!stale) continue;
+        await this.harness.abortTask(task.record.id, SYSTEM_CONTEXT).catch((error: unknown) => {
+          this.log("warn", `恢复卡住的任务失败：${String(error)}`);
+        });
+        this.log("warn", `已中止超时的 ${task.record.kind} 任务（${task.record.id}）`);
+      }
+    } catch (error) {
+      this.log("warn", `检查卡住任务失败：${String(error)}`);
     }
   }
 

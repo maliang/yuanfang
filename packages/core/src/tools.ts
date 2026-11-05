@@ -25,6 +25,8 @@ function out(text: string, details?: JsonValue): TextResult {
   return details === undefined ? { output: [{ type: "text", text }] } : { output: [{ type: "text", text }], details };
 }
 
+const DEFAULT_BASH_TIMEOUT_SECONDS = 600;
+
 function conversationIdOf(api: { conversationId: number }): string {
   return String(api.conversationId);
 }
@@ -1224,12 +1226,17 @@ export function createExtensionSet(host: RuntimeHost, promptDeps: PromptDeps): E
         beforeTool: async (call, api) => {
           if (call.name !== "bash") return undefined;
           const command = typeof call.arguments.command === "string" ? call.arguments.command : "";
-          if (!isPrivilegedCommand(command)) return undefined;
-          const scope = host.scopeFor(String(api.conversationId));
-          if (host.store.hasShellGrant(hashCommand(command), scope.project?.id ?? null)) return undefined;
-          return {
-            block: `这条命令需要用户批准：${command}\n请先调用 request_approval(kind="shell", title="...", detail="...", command=${JSON.stringify(command)})，等用户批准后再重试。`,
-          };
+          const supplied = typeof call.arguments.timeout === "number" ? call.arguments.timeout : undefined;
+          const timeout = supplied !== undefined && supplied > 0 ? supplied : DEFAULT_BASH_TIMEOUT_SECONDS;
+          if (isPrivilegedCommand(command)) {
+            const scope = host.scopeFor(String(api.conversationId));
+            if (!host.store.hasShellGrant(hashCommand(command), scope.project?.id ?? null)) {
+              return {
+                block: `这条命令需要用户批准：${command}\n请先调用 request_approval(kind="shell", title="...", detail="...", command=${JSON.stringify(command)})，等用户批准后再重试。`,
+              };
+            }
+          }
+          return { arguments: { ...call.arguments, timeout } };
         },
       }),
     ],
