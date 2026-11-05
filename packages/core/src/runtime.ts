@@ -53,6 +53,7 @@ import type {
 } from "@yuanfang/shared";
 import { loadConfig, readPersona, resolveUserPath, saveConfig, writePersona, type AppConfig, type Paths } from "./config.js";
 import { openDatabase } from "./db.js";
+import { repairLiveDocuments } from "./repair-live.js";
 import { LayeredFileCredentialStore } from "./credentials.js";
 import { FileLockManager } from "./locks.js";
 import { ProjectIndexer } from "./indexer.js";
@@ -299,6 +300,11 @@ export class YuanfangRuntime implements RuntimeHost {
       (url) => this.#emit({ type: "external_url", url }),
     );
     this.roles = new RoleService(paths.rolesFile);
+
+    const repairedLiveDocuments = repairLiveDocuments(paths.harnessDatabase);
+    if (repairedLiveDocuments > 0) {
+      this.log("warn", `已修复 ${repairedLiveDocuments} 个损坏的 live 会话文档`);
+    }
 
     this.harness = await Harness.open(
       await openNodeSqliteStorage(paths.harnessDatabase),
