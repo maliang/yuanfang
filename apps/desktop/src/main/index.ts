@@ -27,6 +27,12 @@ const E2E_CAPTURE = E2E && process.env.YUANFANG_E2E_CAPTURE === "1";
 if (E2E && process.env.YUANFANG_HOME === undefined) {
   process.env.YUANFANG_HOME = join(tmpdir(), "yuanfang-e2e-home");
 }
+// A copied/silent test app must never share the production runtime database.
+const TEST_COPY =
+  process.env.YUANFANG_SILENT === "1" || /[/\\]test-app[/\\]/.test(process.execPath);
+if (TEST_COPY && process.env.YUANFANG_HOME === undefined) {
+  process.env.YUANFANG_HOME = join(tmpdir(), "yuanfang-test-home");
+}
 if (E2E && process.env.YUANFANG_DEFAULT_PROJECT_PATH === undefined) {
   process.env.YUANFANG_DEFAULT_PROJECT_PATH = join(tmpdir(), "yuanfang-e2e-default");
 }
